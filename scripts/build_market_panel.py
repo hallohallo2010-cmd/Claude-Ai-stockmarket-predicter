@@ -33,6 +33,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -54,6 +55,11 @@ FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 ALFRED_CSV = "https://alfred.stlouisfed.org/graph/alfredgraph.csv"
 ALFRED_DOWNLOAD_PAGE = "https://alfred.stlouisfed.org/series/downloaddata"
 
+# Shiller's CPI column is CPI-U all items, NSA. FRED's CPIAUCNS is the same series and is
+# used as the authority for WHICH months BLS actually published - Shiller carries his own
+# estimates for months BLS has not released, and those must not enter the panel.
+CPI_AUTHORITY_SERIES = "CPIAUCNS"
+
 # Left unset by default: some egress proxies reject requests that override the
 # User-Agent, and the sources here are happy with the library default. Set
 # MARKET_PANEL_USER_AGENT to identify yourself if your environment allows it.
@@ -70,6 +76,7 @@ LAG_DAYS = {
     "cape": 15,         # same CPI lag, and a LOWER BOUND: earnings tail is interpolated
     "dgs10": 1,         # H.15 publishes the month-end close next business day
     "dtb3": 1,          # same
+    "cpi": 15,          # BLS publishes CPI for month M in the middle of M+1
     # unrate has no assumed lag: it is measured from the true ALFRED vintage date
 }
 
@@ -79,9 +86,10 @@ LAG_BASIS = {
     "dgs10": "assumed: month-end close published next business day (3 days if Fri month-end)",
     "dtb3": "assumed: month-end close published next business day (3 days if Fri month-end)",
     "unrate": "MEASURED per row from the ALFRED vintage in which the month first appeared",
+    "cpi": "assumed: BLS publishes CPI for month M around the 10th-15th of M+1",
 }
 
-VALUE_COLUMNS = ["sp500_index", "cape", "dgs10", "dtb3", "unrate"]
+VALUE_COLUMNS = ["sp500_index", "cape", "dgs10", "dtb3", "unrate", "cpi"]
 
 
 class Fetcher:
@@ -220,6 +228,7 @@ def fetch_shiller(fetcher: Fetcher) -> tuple[pd.DataFrame, dict]:
     # "Real Total Return Price" vs the CAPE variant, which says "cyclically adjusted".
     col_tr = _locate(headers, "total return price", ("cyclically",), fallback=9)
     col_cape = _locate(headers, "p/e10 or cape", ("tr p/e10",), fallback=12)
+    col_cpi = _locate(headers, "consumer price index", (), fallback=4)
 
     body = raw.iloc[8:].copy()
     frac = pd.to_numeric(body[0], errors="coerce")
@@ -236,6 +245,7 @@ def fetch_shiller(fetcher: Fetcher) -> tuple[pd.DataFrame, dict]:
         "date": [month_end(y, m) for y, m in zip(years, months)],
         "sp500_index": pd.to_numeric(body[col_tr], errors="coerce").to_numpy(),
         "cape": pd.to_numeric(body[col_cape], errors="coerce").to_numpy(),
+        "cpi": pd.to_numeric(body[col_cpi], errors="coerce").to_numpy(),
     })
     df = df.drop_duplicates(subset="date", keep="last").sort_values("date").reset_index(drop=True)
 
@@ -244,7 +254,96 @@ def fetch_shiller(fetcher: Fetcher) -> tuple[pd.DataFrame, dict]:
         "sheet": "Data",
         "column_sp500_index": f"col {col_tr}: {headers[col_tr]}",
         "column_cape": f"col {col_cape}: {headers[col_cape]}",
+        "column_cpi": f"col {col_cpi}: {headers[col_cpi]}",
         "rows_parsed": int(len(df)),
+    }
+    return df, meta
+
+
+# --------------------------------------------------------------------------------------
+# CPI: verify Shiller's column by value, and drop his estimates for unpublished months
+# --------------------------------------------------------------------------------------
+
+def verify_and_mask_cpi(shiller: pd.DataFrame, fetcher: Fetcher) -> tuple[pd.DataFrame, dict]:
+    """Check Shiller's CPI column against FRED CPIAUCNS and null unpublished months.
+
+    Two jobs, both necessary:
+
+    1. Verify the column by VALUE, not by header. Shiller's CPI is CPI-U all items NSA,
+       which is exactly FRED's CPIAUCNS, so the two must agree to the last decimal on
+       every month they share. A header can be misread; identical numbers cannot.
+
+    2. Shiller carries his own ESTIMATES for months BLS has not published - the workbook
+       says so in a footnote. Those are filled values by any other name, and this panel
+       does not fill. Any month at or after CPIAUCNS begins that BLS has not published is
+       set null here, exactly as unrate 2025-10 is null.
+    """
+    df = shiller.copy()
+    raw_cpi = df["cpi"].copy()
+    try:
+        blob = fetcher.get(
+            FRED_CSV, params={"id": CPI_AUTHORITY_SERIES},
+            cache_key=f"fred_{CPI_AUTHORITY_SERIES}.csv",
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade loudly, never silently
+        log(f"  ! {CPI_AUTHORITY_SERIES} unreachable ({exc}); cpi left UNVERIFIED")
+        return df, {
+            "value_source": "Shiller ie_data.xls, Data sheet",
+            "verified": "NO",
+            "warning": (
+                f"{CPI_AUTHORITY_SERIES} was unreachable, so Shiller's CPI column could "
+                "not be verified by value and his estimates for months BLS has not yet "
+                "published could NOT be identified or removed. Treat recent cpi values "
+                "as possibly estimated rather than observed."
+            ),
+        }
+
+    t = pd.read_csv(io.BytesIO(blob))
+    official = pd.Series(
+        pd.to_numeric(t[t.columns[1]], errors="coerce").to_numpy(),
+        index=pd.to_datetime(t[t.columns[0]]) + pd.offsets.MonthEnd(0),
+    ).dropna()
+
+    # --- 1. verification by value, on the months both sources carry ---
+    both = df.set_index("date")["cpi"].dropna().index.intersection(official.index)
+    diff = (df.set_index("date").loc[both, "cpi"] - official.loc[both]).abs()
+    mismatches = int((diff > 1e-6).sum())
+    if mismatches:
+        log(f"  ! cpi: {mismatches} of {len(both)} months disagree with "
+            f"{CPI_AUTHORITY_SERIES} (max {diff.max():.6f})")
+
+    # --- 2. null the months BLS has not published ---
+    official_start = official.index.min()
+    in_era = df["date"] >= official_start
+    published = df["date"].isin(official.index)
+    estimated = in_era & ~published & raw_cpi.notna()
+    df.loc[estimated, "cpi"] = np.nan
+    est_months = [str(d.date()) for d in df.loc[estimated, "date"]]
+    if est_months:
+        log(f"  cpi: nulled {len(est_months)} Shiller estimate(s) for unpublished "
+            f"months: {', '.join(est_months)}")
+
+    pre = raw_cpi.notna() & (df["date"] < official_start)
+    meta = {
+        "value_source": "Shiller ie_data.xls, Data sheet (column located by header, verified by value)",
+        "series": "CPI-U, all items, not seasonally adjusted, index 1982-1984 = 100",
+        "verified_against": f"{FRED_CSV}?id={CPI_AUTHORITY_SERIES}",
+        "months_compared": int(len(both)),
+        "exact_matches": int((diff <= 1e-6).sum()),
+        "mismatches": mismatches,
+        "max_abs_difference": float(diff.max()) if len(diff) else 0.0,
+        "pre_authority_months": int(pre.sum()),
+        "pre_authority_span": (
+            f"{df.loc[pre,'date'].min().date()} -> {df.loc[pre,'date'].max().date()}"
+            if pre.any() else "none"
+        ),
+        "pre_authority_note": (
+            f"months before {official_start.date()} predate {CPI_AUTHORITY_SERIES} and are "
+            "Shiller's splice of the Warren-Pearson index; they cannot be verified here"
+        ),
+        "estimates_removed": len(est_months),
+        "estimated_months_nulled": ", ".join(est_months) if est_months else "none",
+        "revised": "NO - NSA CPI is final on publication; see the CPI note in the header",
     }
     return df, meta
 
@@ -558,6 +657,15 @@ def render_header(panel: pd.DataFrame, sources: dict, ranges: dict, pulled: str,
         "                 interpolates for recent months and revises later. Its 15-day lag",
         "                 is a lower bound; recent-month cape is provisional.",
         "",
+        "  cpi          : Effectively point-in-time once published. CPI-U all items NSA is",
+        "                 NOT revised: comparing ALFRED vintages 2015-01-16 and 2026-08-12",
+        "                 for CPIAUCNS, 0 of 1224 overlapping observations changed. The",
+        "                 SEASONALLY ADJUSTED series is a different matter - 60 of 816",
+        "                 changed over the same pair, by up to 0.462 - because its seasonal",
+        "                 factors are re-estimated annually. Shiller uses the NSA series, so",
+        "                 cpi here is final on publication and carries no revision risk.",
+        "                 It is still not knowable at month-end M: see the 15-day lag.",
+        "",
         "-" * 86,
         "KNOWN GAPS AND LAG ANOMALIES",
         "-" * 86,
@@ -571,6 +679,24 @@ def render_header(panel: pd.DataFrame, sources: dict, ranges: dict, pulled: str,
         "  2025-11-20. That is the measured release date, not an estimate.",
         "",
     ]
+    est = sources.get("cpi", {}).get("estimated_months_nulled", "none")
+    if est != "none":
+        lines += [
+            f"  cpi: Shiller's workbook carries his own ESTIMATES for months BLS has not",
+            f"  published, and its own footnote says so. Those months are nulled here:",
+            f"  {est}.",
+            "  2025-10 is the same government shutdown that removed unrate 2025-10 - BLS",
+            "  cancelled that CPI release too, so no October 2025 CPI exists. The others",
+            "  are simply not published yet at the pull date.",
+            "",
+            "  NOTE, and this is an inconsistency worth knowing about rather than hiding:",
+            "  sp500_index and cape are Shiller's REAL series, computed by him using that",
+            "  same estimated CPI. So cpi is null at those months while sp500_index and",
+            "  cape carry values there that depend on an estimated deflator. Those two",
+            "  columns cannot be corrected without recomputing them from nominal inputs,",
+            "  which this layer does not do. Treat them as provisional at those months.",
+            "",
+        ]
     nonpos = sources["unrate"].get("measured_lag_days_nonpositive")
     if nonpos:
         lines += [
@@ -649,6 +775,7 @@ def main() -> int:
 
     log("Fetching sources...")
     shiller, shiller_meta = fetch_shiller(fetcher)
+    shiller, cpi_meta = verify_and_mask_cpi(shiller, fetcher)
     dgs10, dgs10_meta = fetch_fred_daily(fetcher, "DGS10", "dgs10")
     dtb3, dtb3_meta = fetch_fred_daily(fetcher, "DTB3", "dtb3")
     try:
@@ -675,6 +802,7 @@ def main() -> int:
             "dgs10": dgs10_meta["daily_last"],
             "dtb3": dtb3_meta["daily_last"],
             "unrate": "n/a - not yet released for this month",
+            "cpi": "n/a - not yet released for this month",
         },
     }
     if partial["is_partial"] and args.drop_partial_month:
@@ -685,6 +813,7 @@ def main() -> int:
 
     sources = {
         "sp500_index + cape": shiller_meta,
+        "cpi": cpi_meta,
         "dgs10": dgs10_meta,
         "dtb3": dtb3_meta,
         "unrate": unrate_meta,
