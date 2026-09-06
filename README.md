@@ -243,6 +243,10 @@ all four features is worth more than one month of extra signal on one of them.
 
 ### 2. Label
 
+> **Superseded in part by Amendment 1 (2026-09-06):** the label is now the sign of the
+> 12-month **excess** return over 3-month bills. The original specification is preserved
+> verbatim below for the record; the overlapping-window discussion still applies in full.
+
 **Direction of the S&P 500 total return index over the following 12 months.** At decision
 month-end M the label is positive if `sp500_index` at M+12 exceeds `sp500_index` at M, and
 negative otherwise. Binary. Ties, which do not occur in practice, count as negative.
@@ -366,7 +370,138 @@ specification rather than replacing it.
 Any change to sections 1-6 is recorded here with a date, the change, and the reason,
 written before the change is made.
 
-**None as of 2026-09-06.**
+---
+
+#### Amendment 1 — 2026-09-06
+
+Made before any feature or label has been computed. Sections 1-6 above are unedited apart
+from a superseding banner on section 2; nothing has been deleted.
+
+**1.1 — Reported: which Shiller column `sp500_index` was built from.**
+
+`sp500_index` is Shiller's **Real Total Return Price**, column 9 of the `Data` sheet in
+`ie_data.xls`. Confirmed by exact match on all 1868 rows, not by reading the header alone.
+It is **real** — CPI-deflated, quoted in the purchasing power of the source file's final
+month — and it is a **total return** index, with dividends reinvested. The three
+candidates are easy to confuse because two of them are indexed to the same base and are
+identical in the first row:
+
+| Workbook column | Series | Value at 1871-01 | Value at 2026-08 |
+| --- | --- | --- | --- |
+| col 1 | S&P Comp. P, nominal price | 4.44 | 7,711.32 |
+| col 7 | Real Price, no dividends | 118.94 | 7,711.13 |
+| **col 9** | **Real Total Return Price** | **118.94** | **5,260,117.47** |
+
+Columns 7 and 9 agree at 1871-01 and differ by a factor of **682** by 2026-08. That factor
+is the reinvested dividends. A study that believed it held column 7 while holding column 9
+would be wrong about its own dependent variable by two and a half orders of magnitude.
+
+**1.2 — Label changed to the 12-month excess return over 3-month bills.**
+
+*Adopted.* At decision month-end M the label is **positive if the 12-month compounded
+total return on the equity index exceeds the 12-month compounded return from rolling
+3-month bills over the same window**, and negative otherwise. Ties count as negative.
+
+Rationale, as directed: the decision this model informs is **stocks versus bills**. The
+sign of the equity return alone does not answer that question — a year in which equities
+return 3% while bills pay 5% is a positive label under the original specification and a
+loss under the only decision the model is for.
+
+Conventions fixed now, so they cannot be chosen to taste later:
+
+- The bill leg compounds `dtb3` observed at each month-end within the window, treating the
+  quoted annualised rate as an effective annual rate: a monthly factor of
+  (1 + dtb3/100) raised to the power 1/12, multiplied across the 12 months. `DTB3` is a
+  secondary-market discount-basis quote, so this is an approximation of a true rolling
+  bill return; it is fixed here as the definition rather than tuned later.
+- The bill leg deliberately uses `dtb3` values from months M+1 through M+12, which are in
+  the future relative to the decision point. This is correct: it is part of the *label*,
+  not a feature. It must not be "corrected" as a leak.
+
+**Blocking prerequisite: the two legs are currently in different units.** `sp500_index` is
+a **real** index (item 1.1); `dtb3` is a **nominal** yield. Subtracting a nominal bill
+return from a real equity return subtracts the inflation of the window from one leg only.
+Over the modelling sample, 12-month inflation averaged 3.9%, exceeded 5% in 174 of 763
+months, and peaked at **14.8% in the year to 1979-03**. A mismatched excess return would
+therefore mislabel the late 1970s and early 1980s wholesale — precisely the stretch where
+the stocks-versus-bills choice mattered most, and precisely where a real-versus-nominal
+error is invisible because the answer looks plausible either way.
+
+The sign of an excess return is invariant to deflation applied consistently to both legs:
+dividing both gross returns by the same inflation factor divides their difference by a
+positive number and cannot change its sign. So a both-real label and a both-nominal label
+are identical, and either is acceptable. Both require **CPI**, which the panel does not
+carry: it is available as column 4 of the same Shiller workbook already downloaded.
+
+Accordingly: **`cpi` must be added to the panel as a data-layer change, with its own
+provenance and lag entry, before the label is computed.** Its publication lag is the same
+mid-following-month CPI release already documented for `sp500_index` and `cape`. This
+amendment adopts the label; the data layer must be extended before the label can be
+computed correctly. The feature layer does not begin until that is done.
+
+**1.3 — Effective sample size, recorded as the study's primary limitation.**
+
+Because the label horizon is 12 months and observations are monthly, independent
+non-overlapping observations are the month count divided by 12, rounded **down** to
+complete blocks. These exact counts supersede the "roughly 64" approximation given in
+section 2, which rounded rather than truncated:
+
+| Split | Month-ends | **Independent non-overlapping 12-month observations** |
+| --- | --- | --- |
+| Development, 1962-02-28 to 2009-12-31 | 575 | **47** |
+| Holdout, 2010-01-31 to 2025-08-31 | 188 | **15** |
+| Total | 763 | **63** |
+
+**This is the primary limitation of the study, ranking above data quality, feature choice
+and model class.** The holdout contains **fifteen** independent observations. Fifteen
+observations can distinguish a large effect from nothing; they cannot rank models, resolve
+a modest edge, or support a confident negative. Four features fitted against 47
+independent development observations is already a regime in which overfitting is the
+default outcome rather than a risk to be managed.
+
+Every reported result carries this number. Any conclusion phrased as though the study had
+763 observations is a misreading of the design, and the write-up states the effective
+count wherever a sample size is quoted.
+
+**1.4 — The 1962 start, and what dropping `yield_slope` would recover.**
+
+The modelling sample starts **1962-02-28 solely because `dgs10` begins 1962-01**, which
+`yield_slope` requires. It is a consequence of data availability, not a design choice: the
+equity series reaches back to 1871 and CAPE to 1881.
+
+What dropping `yield_slope` would actually recover, measured:
+
+| Feature set | Sample start | Month-ends | Independent obs |
+| --- | --- | --- | --- |
+| A — all four features | 1962-02-28 | 763 | 63 |
+| B — drop `yield_slope` | 1960-03-31 | 786 | **65** |
+| C — drop `yield_slope` **and** `unrate_trend_12m` | 1891-01-31 | 1616 | **134** |
+
+Dropping `yield_slope` alone buys **two** additional independent observations, 63 to 65.
+It recovers essentially nothing, because the binding constraint moves straight to
+`unrate_trend_12m`, whose usable history starts in 1960. The century of extra data is
+locked behind the **unemployment** feature, not the yield curve. Sacrificing the yield
+curve to reach it would be a bad trade made on a false premise.
+
+Scenario C — dropping both macro features and running CAPE and momentum from 1891 — would
+more than double the independent observations, from 63 to 134, and is the only variant
+that materially addresses the limitation in 1.3. It is **not adopted**: it abandons the
+macro half of the study's premise, and choosing it now, before any result exists, would
+still be a design chosen for sample size rather than for the question.
+
+A further point in favour of A: starting in 1962 means every 12-month `unrate` window in
+the sample lies entirely within the ALFRED first-release era, which begins 1960-02. Under
+scenario B the earliest windows would reach back into the pre-1960 revised rows and
+quietly reintroduce the lookahead contamination the panel was built to eliminate.
+
+**Decision: `yield_slope` is retained and the sample starts 1962-02-28. This is final and
+will not be revisited after results are seen.** Scenario C is recorded here as a
+considered and rejected alternative so that adopting it later would be visible as what it
+would be.
+
+---
+
+**Amendments after Amendment 1: none as of 2026-09-06.**
 
 ---
 
