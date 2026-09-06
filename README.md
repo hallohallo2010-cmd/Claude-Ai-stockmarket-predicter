@@ -209,6 +209,167 @@ max 51 days.
 
 ---
 
+## PRE-REGISTRATION
+
+**Registered 2026-09-06. Panel build `data/market_panel.parquet`, 1868 rows,
+1871-01-31 to 2026-08-31.** This section fixes the study design before any feature has
+been computed and before any label has been examined. Everything below is binding.
+Changes require a dated entry in the Amendments log at the end of this section, written
+*before* the change is made. An undated change is a violation of the design, not a
+refinement of it.
+
+### 1. Feature set — fixed now
+
+Four features. No more, no fewer.
+
+| Feature | Definition | Window | Panel columns used |
+| --- | --- | --- | --- |
+| `cape_z` | Expanding z-score of CAPE: value minus expanding mean, over expanding standard deviation | Expanding, minimum warm-up 120 months | `cape` |
+| `yield_slope` | 10-year yield minus 3-month bill, in percentage points | Contemporaneous, no window | `dgs10`, `dtb3` |
+| `mom_12m` | 12-month price momentum: log change in the total return index over 12 months | 12 months | `sp500_index` |
+| `unrate_trend_12m` | Unemployment trend: latest rate minus its 12-month trailing mean | 12 months | `unrate`, `unrate_lag_days` |
+
+No interaction terms, no polynomial expansions, no alternative windows, no regime dummies,
+no additional series. If a fifth feature or a different window later looks necessary, it
+is a dated amendment and is reported alongside the original specification, never
+silently in place of it.
+
+**Uniform availability rule.** A decision is taken at month-end M. A feature may use an
+observation from month k only if `k + lag_days <= M`, using each series' own lag column.
+Applied uniformly this places every feature at month M−1 or older. For `yield_slope` this
+is deliberately conservative: a trader acting at the month-end close can observe that
+day's yields, but the published series carries a one-day lag, and one uniform rule across
+all four features is worth more than one month of extra signal on one of them.
+
+### 2. Label
+
+**Direction of the S&P 500 total return index over the following 12 months.** At decision
+month-end M the label is positive if `sp500_index` at M+12 exceeds `sp500_index` at M, and
+negative otherwise. Binary. Ties, which do not occur in practice, count as negative.
+
+`sp500_index` is Shiller's **real** (CPI-deflated) total return index, so this is the
+direction of real total return, not nominal. This is a deliberate choice and it changes
+the label in high-inflation stretches, where nominal is positive and real is not. The
+rebasing constant identified in the provenance cancels in the ratio, so the label is
+stable across pulls of the source file.
+
+**The overlapping-window problem, stated explicitly.** Consecutive monthly observations
+share 11 of the 12 months of their label horizon. The labels are therefore massively
+autocorrelated and monthly rows are nowhere near independent. The modelling sample of
+**763 month-ends contains roughly 64 independent 12-month blocks**. Three consequences,
+fixed now:
+
+- All uncertainty estimates use a moving-block bootstrap with block length of at least 12
+  months, or Newey-West standard errors with 11 lags. Treating months as independent
+  would understate standard errors by roughly the square root of 12 and is prohibited.
+- No random k-fold cross-validation, ever. Random folds place a row's overlapping
+  neighbours on both sides of the split, which leaks the label directly.
+- Power is governed by ~64 effective observations, not 763. The study is small. Claims
+  will be sized to that, and a result that requires 763 independent observations to reach
+  significance is not a result.
+
+### 3. Baseline
+
+**Always predict up.** Its predicted probability is the positive rate **of the training
+window only**, recomputed at each walk-forward step from data available at that step.
+Never the full-sample positive rate.
+
+This document deliberately **does not report the sample's positive rate**, because
+printing it here would fix in the analyst's mind the very quantity the baseline is
+supposed to estimate separately within each fold.
+
+Equities rise over most 12-month windows, so this baseline is strong on accuracy and hard
+to beat on that metric. Beating it is the minimum bar for the study to have found
+anything at all, not the goal.
+
+### 4. Split — walk-forward expanding window
+
+| Period | Span | Month-ends | Use |
+| --- | --- | --- | --- |
+| **Development** | 1962-02-28 to 2009-12-31 | 575 | All model selection, tuning, feature checking |
+| **Holdout** | 2010-01-31 to 2025-08-31 | 188 (~15.7 blocks) | Read once |
+
+The sample starts **1962-02-28** because `dgs10` begins 1962-01 and `yield_slope` needs
+it; that is the binding constraint, not a choice. It ends **2025-08-31** because a
+12-month forward label requires index data through 2026-08, the last month in the panel.
+
+Training is an **expanding** window: each step trains on everything from 1962-02-28 up to
+the step's cutoff and predicts forward. The window never slides or resets.
+
+**Embargo.** At every step the training window must end at least **12 months** before the
+test point. Without the embargo the last year of training labels reaches forward into the
+test period, which is the same leak as random folds wearing a different hat.
+
+**The holdout is calendar years 2010 through 2025, and it is read once.** It is read after
+the model class, hyperparameters, and all feature transforms are frozen from development
+alone. One read, one number. If the result fails the criterion below, that is the result
+of the study. It will not be re-tuned and re-read, and the holdout will not be reopened to
+diagnose the failure.
+
+**Known limitation of this holdout, recorded now so it cannot become an excuse later.**
+2010-2025 is one long expansion plus a single sharp crash, roughly 15.7 independent
+blocks, at persistently high CAPE. It is a narrow regime and a single read of it has
+limited power. This is accepted as the cost of having a genuine holdout at all.
+
+### 5. Success criterion — stated now
+
+**Primary.** On the holdout, the model's **Brier score must be at least 10% lower in
+relative terms** than the baseline's Brier score, where the baseline uses each step's
+training-window positive rate. Brier, not accuracy: the label is imbalanced and the
+constant baseline scores well on accuracy, so accuracy cannot distinguish a real signal
+from the base rate.
+
+**Robustness.** The improvement must survive dropping calendar year 2020. A result that
+exists only because of the COVID crash and recovery is a result about one episode.
+
+**Uncertainty.** Reported as a moving-block bootstrap confidence interval, block length 12
+months, 10,000 resamples.
+
+**Secondary, reporting only, never promoted to primary:** accuracy, AUC, log loss, and the
+Sharpe ratio of any trading rule derived from the signal. These are described in the
+write-up. They cannot be substituted for the Brier criterion if the Brier criterion fails.
+
+**Declared expected outcome.** The prior is that this study finds no useful predictive
+signal. A negative result is the anticipated finding and will be reported plainly as
+such. The purpose of fixing the criterion now is that "no signal" remains a reportable
+outcome rather than an invitation to keep searching.
+
+### 6. The `unrate` coverage limitation, and the decision not to shorten the window
+
+`unrate` has a permanent hole at 2025-10, which propagates through the 12-month window of
+`unrate_trend_12m`. Measured against this panel, that feature is null at decision
+month-ends **2025-12-31 through 2026-08-31** — and by the same arithmetic will remain null
+until **2026-11-30**, the first decision point whose 12-month window clears the hole.
+
+**The labelled modelling sample ends 2025-08-31, so the gap costs the study exactly zero
+observations.** It costs live deployability: from 2025-12 to 2026-11 the model cannot
+produce a signal at all, because one of its four inputs does not exist.
+
+**Decision: the 12-month window is not shortened.** Cutting `unrate_trend_12m` to a 3- or
+6-month window would restore live coverage sooner and is rejected. The window length was
+chosen on design grounds before the gap was considered, and changing it now would be a
+post-hoc specification change motivated purely by an inconvenience in recent data — the
+precise practice this pre-registration exists to prevent. That the change would be
+convenient is what makes it disqualifying.
+
+The consequence is accepted: **no live signal for those months.** A model that abstains
+when an input is genuinely missing is behaving correctly. Filling the gap, interpolating
+it, or shrinking the window to step around it would all produce a signal in months where
+no unemployment trend is knowable, which is a fabricated number, not a prediction.
+
+If a shorter window is genuinely wanted later, it is a new feature under a dated
+amendment, pre-registered with its own criterion, and reported **alongside** the 12-month
+specification rather than replacing it.
+
+### Amendments
+
+Any change to sections 1-6 is recorded here with a date, the change, and the reason,
+written before the change is made.
+
+**None as of 2026-09-06.**
+
+---
+
 ## LEAKAGE RULES FOR THE FEATURE LAYER — BINDING
 
 Three rules govern how this panel may be consumed. They are binding: a feature that
