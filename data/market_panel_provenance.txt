@@ -1,0 +1,173 @@
+======================================================================================
+MARKET TIMING PANEL - PROVENANCE AND POINT-IN-TIME HEADER
+======================================================================================
+
+Built by      : scripts/build_market_panel.py
+Pull date     : 2026-09-06 09:11:13 UTC
+Rows          : 1869
+Date range    : 1871-01-31 -> 2026-09-30
+Frequency     : monthly, month-end aligned
+
+Data only. No features, no model, no predictions. No column is derived from
+any other column in this file.
+
+--------------------------------------------------------------------------------------
+SOURCES
+--------------------------------------------------------------------------------------
+
+[sp500_index + cape]
+  url                     : https://img1.wsimg.com/blobby/go/e5e77e0b-59d1-44d9-ab25-4763ac982e53/downloads/70fec4f5-727f-4e53-b5f1-179af109c5fa/ie_data.xls?ver=1788371540009
+  sheet                   : Data
+  column_sp500_index      : col 9: real total return price
+  column_cape             : col 12: cyclically adjusted price earnings ratio p/e10 or cape
+  rows_parsed             : 1869
+
+[dgs10]
+  url                     : https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10
+  series_id               : DGS10
+  native_frequency        : daily
+  daily_observations      : 16154
+  daily_first             : 1962-01-02
+  daily_last              : 2026-09-03
+  month_end_rule          : last available observation within the calendar month
+
+[dtb3]
+  url                     : https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTB3
+  series_id               : DTB3
+  native_frequency        : daily
+  daily_observations      : 18160
+  daily_first             : 1954-01-04
+  daily_last              : 2026-09-03
+  month_end_rule          : last available observation within the calendar month
+
+[unrate]
+  url                     : https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=UNRATE&vintage_date=<each vintage>
+  vintage_list_url        : https://alfred.stlouisfed.org/series/downloaddata?seid=UNRATE
+  series_id               : UNRATE
+  point_in_time           : YES - first published value per reference month
+  vintages_used           : 799
+  vintage_first           : 1960-03-15
+  vintage_last            : 2026-09-04
+  first_release_from      : 1960-02-29
+  revised_row_count       : 145
+  revised_rows_span       : 1948-01-31 -> 1960-01-31
+  measured_lag_days_min   : -2
+  measured_lag_days_median: 5
+  measured_lag_days_max   : 51
+  measured_lag_days_nonpositive: 7
+
+--------------------------------------------------------------------------------------
+PER-SERIES RANGE, NULLS, AND PUBLICATION LAG
+--------------------------------------------------------------------------------------
+
+A value on row `date` must be treated as unknown until date + lag_days.
+A signal formed at month-end M may only use rows where date + lag_days <= M.
+
+[sp500_index]
+  observed range          : 1871-01-31 -> 2026-09-30
+  non-null / null         : 1869 / 0
+  gaps inside that range  : 0  none
+  lag_days                : 15
+  lag basis               : assumed: CPI for month M published ~15th of M+1
+
+[cape]
+  observed range          : 1881-01-31 -> 2026-09-30
+  non-null / null         : 1749 / 120
+  gaps inside that range  : 0  none
+  lag_days                : 15
+  lag basis               : assumed LOWER BOUND: CPI lag; earnings tail interpolated and later revised
+
+[dgs10]
+  observed range          : 1962-01-31 -> 2026-09-30
+  non-null / null         : 777 / 1092
+  gaps inside that range  : 0  none
+  lag_days                : 1
+  lag basis               : assumed: month-end close published next business day (3 days if Fri month-end)
+
+[dtb3]
+  observed range          : 1954-01-31 -> 2026-09-30
+  non-null / null         : 873 / 996
+  gaps inside that range  : 0  none
+  lag_days                : 1
+  lag basis               : assumed: month-end close published next business day (3 days if Fri month-end)
+
+[unrate]
+  observed range          : 1948-01-31 -> 2026-08-31
+  non-null / null         : 943 / 926
+  gaps inside that range  : 1  2025-10-31
+  lag_days                : measured per row
+  lag basis               : MEASURED per row from the ALFRED vintage in which the month first appeared
+
+--------------------------------------------------------------------------------------
+POINT-IN-TIME STATUS
+--------------------------------------------------------------------------------------
+
+  unrate       : YES - first published value per reference month
+                 First-release values from 1960-02-29
+                 onward, taken from the earliest ALFRED vintage in which each
+                 month appears. Release dates are observed, so unrate_lag_days
+                 is measured, not assumed.
+                 145 earlier rows predate ALFRED's archive and are REVISED
+                 data: they are lookahead-contaminated. Filter on
+                 unrate_is_first_release to exclude them.
+
+  dgs10, dtb3  : Effectively point-in-time. Market rates, not revised. The
+                 month-end level is set at the close of the last business day
+                 of the month and published the next business day.
+
+  sp500_index  : NOT point-in-time. REVISED DATA. Shiller publishes no vintage
+  cape           archive, so these are as-of the pull date above.
+                 sp500_index is Shiller's Real Total Return Price, quoted in the
+                 purchasing power of the source file's final month. Every new
+                 release rescales the whole column by one constant (+2.8% between
+                 the 2023-09 and 2024-09 files), so LEVELS ARE NOT COMPARABLE
+                 ACROSS PULLS - month-over-month ratios are, since the constant
+                 cancels. Apart from that constant, only the final partial month
+                 of a release is materially revised.
+                 cape additionally depends on S&P earnings, which Shiller
+                 interpolates for recent months and revises later. Its 15-day lag
+                 is a lower bound; recent-month cape is provisional.
+
+--------------------------------------------------------------------------------------
+KNOWN GAPS AND LAG ANOMALIES
+--------------------------------------------------------------------------------------
+
+  unrate 2025-10 is absent from the source itself. The US government shutdown
+  meant no household survey was conducted for October 2025, so BLS never
+  published a rate for that month. FRED's own series is null there too. It is
+  left null here and is NOT filled.
+
+  unrate 2025-09 carries a 51-day lag: the same shutdown pushed its release to
+  2025-11-20. That is the measured release date, not an estimate.
+
+  7 early-1960s rows have unrate_lag_days <= 0. This is not an error. In
+  that era BLS published the Monthly Report on the Labor Force within the
+  reference month itself, so the number was genuinely knowable before month
+  end. A non-positive lag simply means no embargo applies to that row.
+
+--------------------------------------------------------------------------------------
+PARTIAL TRAILING MONTH - READ THIS
+--------------------------------------------------------------------------------------
+
+  The last row, 2026-09-30, is the CURRENT calendar month, which had
+  not ended at the pull date (2026-09-06). Its values are month-to-date,
+  not month-end:
+
+    sp500_index  last underlying observation: Shiller month 2026.09 (source file is month-to-date)
+    cape         last underlying observation: Shiller month 2026.09 (source file is month-to-date)
+    dgs10        last underlying observation: 2026-09-03
+    dtb3         last underlying observation: 2026-09-03
+    unrate       last underlying observation: n/a - not yet released for this month
+
+  The row is retained rather than silently dropped, because dropping data is
+  also a choice. Do not treat it as a completed month-end observation. Rerun
+  with --drop-partial-month to exclude it.
+
+--------------------------------------------------------------------------------------
+NULL POLICY
+--------------------------------------------------------------------------------------
+
+Nulls are never filled, interpolated, or forward-filled. A null means the source
+had no value for that month. Series begin as early as each source allows, so
+early rows are null for the series that did not exist yet.
+======================================================================================

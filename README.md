@@ -185,6 +185,30 @@ contains no observation at all the cell is null.
 
 ---
 
+## Known gaps and anomalies
+
+Found in the data, not worked around. All of these are also written into the provenance
+file on every build.
+
+- **`unrate` has no value for 2025-10.** The US government shutdown meant no household
+  survey was conducted for October 2025, so BLS never published a rate for it. FRED's own
+  series is null there. The panel leaves it null and does not fill it.
+- **`unrate` for 2025-09 has a 51-day lag**, because the same shutdown pushed its release
+  to 2025-11-20. That is the measured release date, not an estimate.
+- **Seven early-1960s rows have `unrate_lag_days <= 0`.** Not a bug. In that era BLS
+  published the Monthly Report on the Labor Force *within* the reference month, so the
+  number really was knowable before month end. A non-positive lag means no embargo applies.
+- **The trailing row may be a partial month.** If the build runs mid-month, the last row is
+  dated month-end but its values are month-to-date: Shiller's file carries a partial current
+  month, and the daily yields stop at the last trading day so far. The row is kept rather
+  than silently dropped, and the build prints a warning and records it in the provenance.
+  Pass `--drop-partial-month` to exclude it.
+
+Measured `unrate` publication lag across the 798 first-release rows: min -2, median 5,
+max 51 days.
+
+---
+
 ## Provenance
 
 Every build writes a header block into the parquet file's schema metadata and a
