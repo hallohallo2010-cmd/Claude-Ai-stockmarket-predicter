@@ -580,6 +580,24 @@ def render_header(panel: pd.DataFrame, sources: dict, ranges: dict, pulled: str,
             "  end. A non-positive lag simply means no embargo applies to that row.",
             "",
         ]
+    if partial.get("dropped"):
+        lines += [
+            "-" * 86,
+            "TRAILING MONTH EXCLUDED",
+            "-" * 86,
+            "",
+            f"  This build ran with --drop-partial-month. The row for {partial['month_end']},",
+            f"  the calendar month still in progress at the pull date ({partial['today']}), was",
+            "  present in the sources but is NOT in this file. What it would have held:",
+            "",
+        ]
+        for col, last_obs in partial["last_obs"].items():
+            lines.append(f"    {col:<12} {last_obs}")
+        lines += [
+            "",
+            "  Rerun without --drop-partial-month to keep it as a month-to-date row.",
+            "",
+        ]
     if partial["is_partial"]:
         lines += [
             "-" * 86,

@@ -3,9 +3,9 @@ MARKET TIMING PANEL - PROVENANCE AND POINT-IN-TIME HEADER
 ======================================================================================
 
 Built by      : scripts/build_market_panel.py
-Pull date     : 2026-09-06 09:11:13 UTC
-Rows          : 1869
-Date range    : 1871-01-31 -> 2026-09-30
+Pull date     : 2026-09-06 18:14:29 UTC
+Rows          : 1868
+Date range    : 1871-01-31 -> 2026-08-31
 Frequency     : monthly, month-end aligned
 
 Data only. No features, no model, no predictions. No column is derived from
@@ -64,36 +64,36 @@ A value on row `date` must be treated as unknown until date + lag_days.
 A signal formed at month-end M may only use rows where date + lag_days <= M.
 
 [sp500_index]
-  observed range          : 1871-01-31 -> 2026-09-30
-  non-null / null         : 1869 / 0
+  observed range          : 1871-01-31 -> 2026-08-31
+  non-null / null         : 1868 / 0
   gaps inside that range  : 0  none
   lag_days                : 15
   lag basis               : assumed: CPI for month M published ~15th of M+1
 
 [cape]
-  observed range          : 1881-01-31 -> 2026-09-30
-  non-null / null         : 1749 / 120
+  observed range          : 1881-01-31 -> 2026-08-31
+  non-null / null         : 1748 / 120
   gaps inside that range  : 0  none
   lag_days                : 15
   lag basis               : assumed LOWER BOUND: CPI lag; earnings tail interpolated and later revised
 
 [dgs10]
-  observed range          : 1962-01-31 -> 2026-09-30
-  non-null / null         : 777 / 1092
+  observed range          : 1962-01-31 -> 2026-08-31
+  non-null / null         : 776 / 1092
   gaps inside that range  : 0  none
   lag_days                : 1
   lag basis               : assumed: month-end close published next business day (3 days if Fri month-end)
 
 [dtb3]
-  observed range          : 1954-01-31 -> 2026-09-30
-  non-null / null         : 873 / 996
+  observed range          : 1954-01-31 -> 2026-08-31
+  non-null / null         : 872 / 996
   gaps inside that range  : 0  none
   lag_days                : 1
   lag basis               : assumed: month-end close published next business day (3 days if Fri month-end)
 
 [unrate]
   observed range          : 1948-01-31 -> 2026-08-31
-  non-null / null         : 943 / 926
+  non-null / null         : 943 / 925
   gaps inside that range  : 1  2025-10-31
   lag_days                : measured per row
   lag basis               : MEASURED per row from the ALFRED vintage in which the month first appeared
@@ -146,22 +146,20 @@ KNOWN GAPS AND LAG ANOMALIES
   end. A non-positive lag simply means no embargo applies to that row.
 
 --------------------------------------------------------------------------------------
-PARTIAL TRAILING MONTH - READ THIS
+TRAILING MONTH EXCLUDED
 --------------------------------------------------------------------------------------
 
-  The last row, 2026-09-30, is the CURRENT calendar month, which had
-  not ended at the pull date (2026-09-06). Its values are month-to-date,
-  not month-end:
+  This build ran with --drop-partial-month. The row for 2026-09-30,
+  the calendar month still in progress at the pull date (2026-09-06), was
+  present in the sources but is NOT in this file. What it would have held:
 
-    sp500_index  last underlying observation: Shiller month 2026.09 (source file is month-to-date)
-    cape         last underlying observation: Shiller month 2026.09 (source file is month-to-date)
-    dgs10        last underlying observation: 2026-09-03
-    dtb3         last underlying observation: 2026-09-03
-    unrate       last underlying observation: n/a - not yet released for this month
+    sp500_index  Shiller month 2026.09 (source file is month-to-date)
+    cape         Shiller month 2026.09 (source file is month-to-date)
+    dgs10        2026-09-03
+    dtb3         2026-09-03
+    unrate       n/a - not yet released for this month
 
-  The row is retained rather than silently dropped, because dropping data is
-  also a choice. Do not treat it as a completed month-end observation. Rerun
-  with --drop-partial-month to exclude it.
+  Rerun without --drop-partial-month to keep it as a month-to-date row.
 
 --------------------------------------------------------------------------------------
 NULL POLICY
