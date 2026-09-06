@@ -209,6 +209,132 @@ max 51 days.
 
 ---
 
+## LEAKAGE RULES FOR THE FEATURE LAYER — BINDING
+
+Three rules govern how this panel may be consumed. They are binding: a feature that
+breaks one of them is wrong even if it backtests well, and especially if it backtests
+well. Each is stated with the decision taken and the measurement that justifies it.
+
+### Rule 1 — CAPE normalisation uses an EXPANDING window, never full-sample
+
+**Decision.** Any z-score, percentile or rank of `cape` is computed over an expanding
+window using only data up to and including that date, with an explicit minimum warm-up.
+Full-sample `mean()`, `std()`, `rank()` or `quantile()` over the whole column is
+forbidden. The warm-up period produces leading NaN; leave it NaN, do not backfill.
+
+```python
+# CORRECT - expanding, past-only, explicit warm-up
+mu, sd = cape.expanding(min_periods=120).mean(), cape.expanding(min_periods=120).std()
+z = (cape - mu) / sd
+
+# WRONG - encodes the whole century's distribution into every historical row
+z = (cape - cape.mean()) / cape.std()
+```
+
+**Why, measured on this panel.** CAPE's mean by era: 14.87 (1881-1929), 14.91
+(1930-1979), 21.15 (1980-2009), **28.85 (2010-2026)**. The full-sample mean of 17.78 sits
+above the first two eras and far below the last, so a full-sample z-score tells every
+pre-1980 row that the market is expensive relative to a future it could not have seen,
+and every post-1980 row the reverse.
+
+Full-sample and expanding z differ by **0.58 sd on average and up to 3.00 sd**, and they
+**disagree on the sign of the signal in 13.0% of months** — 123 of 829 pre-1960 months
+flip between "cheap" and "expensive". A sign flip is not a rounding difference; it
+reverses the trade.
+
+### Rule 2 — unrate publication lag: use the lag column, not a fixed shift
+
+**Decision.** At month-end M, the usable unemployment observation is the newest row
+satisfying `date + unrate_lag_days <= M`. Do **not** use a fixed `.shift(1)`.
+
+```python
+avail = panel[["date", "unrate", "unrate_lag_days"]].dropna(subset=["unrate"]).copy()
+avail["available_on"] = avail["date"] + pd.to_timedelta(avail["unrate_lag_days"], unit="D")
+avail = avail.sort_values("available_on")
+
+known = pd.merge_asof(                      # newest observation public by each month end
+    panel[["date"]].sort_values("date"),
+    avail[["available_on", "date", "unrate"]].rename(columns={"date": "unrate_ref_month"}),
+    left_on="date", right_on="available_on", direction="backward",
+)
+```
+
+**Why not `shift(1)`.** "The newest known value at month-end M is M-1" is a good
+description of the typical month and a bad implementation. Checked against the measured
+lag column, a blanket `shift(1)` disagrees in **154 of 1868 months**:
+
+| | count | what happens |
+| --- | --- | --- |
+| **Leaks** | 146 | uses a value that was not yet published at M |
+| **Too conservative** | 7 | a newer month was already public and is discarded |
+| **Loses data** | 1 | yields NaN where a real value was available |
+
+The leaks are 145 pre-1960 rows plus one modern case: at **2025-10-31 a `shift(1)` hands
+you September 2025's rate, which was not published until 2025-11-20** — three weeks of
+future knowledge, during the exact stretch where the labour market was the story.
+
+The 7 conservative cases are the early-1960s months when BLS published within the
+reference month itself. The single lost value is 2025-11-30, where `shift(1)` returns the
+never-published October while September had been public since 2025-11-20.
+
+The availability rule also **subsumes `unrate_is_first_release`**: the 145 pre-1960 rows
+carry an availability date of 1960-03-15, so the rule excludes precisely the
+revised, contaminated era without a second filter.
+
+### Rule 3 — the 2025-10 hole is permanent: propagate NaN, never close it
+
+`unrate` has no value for October 2025 and never will. No household survey was conducted,
+BLS published no rate, and none of ALFRED's 799 vintages carries one. It is not missing
+data to be recovered; it is a month that does not exist.
+
+**Decision, explicitly:**
+
+1. **Never** `fillna`, `interpolate`, `ffill` or `bfill` across it.
+2. **Never** `dropna` on `unrate` before computing a window. Dropping splices September
+   directly to November and silently shifts every subsequent window by one month — the
+   most dangerous option, because the output looks complete.
+3. Any windowed feature whose window covers 2025-10 is **NaN**. Use
+   `min_periods == window` so a single missing observation propagates.
+4. Point-in-time *level* features are unaffected: the Rule 2 availability rule simply
+   returns the newest month that does exist.
+
+```python
+# NaN propagates: min_periods == window means one missing obs voids the window
+feat = unrate_by_ref_month.rolling(12, min_periods=12).mean()
+```
+
+**Order of operations matters, and this is the trap.** Applying Rule 2 first and then
+computing windows *hides the hole*. After the availability shift there are **zero NaNs**
+around October 2025 — the gap becomes a stale repeat:
+
+```
+month end     newest known ref month   value   staleness
+2025-09-30 -> 2025-08                  4.3     1 month
+2025-10-31 -> 2025-08                  4.3     2 months   <-- gap invisible
+2025-11-30 -> 2025-09                  4.4     2 months   <-- gap invisible
+2025-12-31 -> 2025-11                  4.6     1 month
+```
+
+So: **compute windowed features on the reference-month series, which carries the NaN, and
+apply the availability shift to the resulting feature** — not the other way round. A
+feature layer that shifts first has nothing left to propagate. Carrying an explicit
+staleness column is recommended, so a stale repeat is visible rather than assumed fresh.
+
+**Blast radius.** The panel ends 2026-08-31, only 10 rows after the gap. So any `unrate`
+window of 11 months or more is **NaN for the entire remainder of the panel**:
+
+| window | months NaN | span |
+| --- | --- | --- |
+| 3-month | 3 | 2025-10-31 .. 2025-12-31 |
+| 6-month | 6 | 2025-10-31 .. 2026-03-31 |
+| 12-month | 11 | 2025-10-31 .. 2026-08-31 (all remaining rows) |
+
+That is the correct outcome, not a bug to engineer around. A 12-month unemployment
+feature has no valid values after September 2025, and any backtest reporting results
+there is reporting something it invented.
+
+---
+
 ## Provenance
 
 Every build writes a header block into the parquet file's schema metadata and a
