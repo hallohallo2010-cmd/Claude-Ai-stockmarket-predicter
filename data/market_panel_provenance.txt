@@ -3,7 +3,7 @@ MARKET TIMING PANEL - PROVENANCE AND POINT-IN-TIME HEADER
 ======================================================================================
 
 Built by      : scripts/build_market_panel.py
-Pull date     : 2026-09-06 18:14:29 UTC
+Pull date     : 2026-09-06 21:34:14 UTC
 Rows          : 1868
 Date range    : 1871-01-31 -> 2026-08-31
 Frequency     : monthly, month-end aligned
@@ -20,7 +20,23 @@ SOURCES
   sheet                   : Data
   column_sp500_index      : col 9: real total return price
   column_cape             : col 12: cyclically adjusted price earnings ratio p/e10 or cape
+  column_cpi              : col 4: consumer price index cpi
   rows_parsed             : 1869
+
+[cpi]
+  value_source            : Shiller ie_data.xls, Data sheet (column located by header, verified by value)
+  series                  : CPI-U, all items, not seasonally adjusted, index 1982-1984 = 100
+  verified_against        : https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCNS
+  months_compared         : 1362
+  exact_matches           : 1362
+  mismatches              : 0
+  max_abs_difference      : 0.0
+  pre_authority_months    : 504
+  pre_authority_span      : 1871-01-31 -> 1912-12-31
+  pre_authority_note      : months before 1913-01-31 predate CPIAUCNS and are Shiller's splice of the Warren-Pearson index; they cannot be verified here
+  estimates_removed       : 3
+  estimated_months_nulled : 2025-10-31, 2026-08-31, 2026-09-30
+  revised                 : NO - NSA CPI is final on publication; see the CPI note in the header
 
 [dgs10]
   url                     : https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10
@@ -98,6 +114,13 @@ A signal formed at month-end M may only use rows where date + lag_days <= M.
   lag_days                : measured per row
   lag basis               : MEASURED per row from the ALFRED vintage in which the month first appeared
 
+[cpi]
+  observed range          : 1871-01-31 -> 2026-07-31
+  non-null / null         : 1866 / 2
+  gaps inside that range  : 1  2025-10-31
+  lag_days                : 15
+  lag basis               : assumed: BLS publishes CPI for month M around the 10th-15th of M+1
+
 --------------------------------------------------------------------------------------
 POINT-IN-TIME STATUS
 --------------------------------------------------------------------------------------
@@ -128,6 +151,15 @@ POINT-IN-TIME STATUS
                  interpolates for recent months and revises later. Its 15-day lag
                  is a lower bound; recent-month cape is provisional.
 
+  cpi          : Effectively point-in-time once published. CPI-U all items NSA is
+                 NOT revised: comparing ALFRED vintages 2015-01-16 and 2026-08-12
+                 for CPIAUCNS, 0 of 1224 overlapping observations changed. The
+                 SEASONALLY ADJUSTED series is a different matter - 60 of 816
+                 changed over the same pair, by up to 0.462 - because its seasonal
+                 factors are re-estimated annually. Shiller uses the NSA series, so
+                 cpi here is final on publication and carries no revision risk.
+                 It is still not knowable at month-end M: see the 15-day lag.
+
 --------------------------------------------------------------------------------------
 KNOWN GAPS AND LAG ANOMALIES
 --------------------------------------------------------------------------------------
@@ -139,6 +171,20 @@ KNOWN GAPS AND LAG ANOMALIES
 
   unrate 2025-09 carries a 51-day lag: the same shutdown pushed its release to
   2025-11-20. That is the measured release date, not an estimate.
+
+  cpi: Shiller's workbook carries his own ESTIMATES for months BLS has not
+  published, and its own footnote says so. Those months are nulled here:
+  2025-10-31, 2026-08-31, 2026-09-30.
+  2025-10 is the same government shutdown that removed unrate 2025-10 - BLS
+  cancelled that CPI release too, so no October 2025 CPI exists. The others
+  are simply not published yet at the pull date.
+
+  NOTE, and this is an inconsistency worth knowing about rather than hiding:
+  sp500_index and cape are Shiller's REAL series, computed by him using that
+  same estimated CPI. So cpi is null at those months while sp500_index and
+  cape carry values there that depend on an estimated deflator. Those two
+  columns cannot be corrected without recomputing them from nominal inputs,
+  which this layer does not do. Treat them as provisional at those months.
 
   7 early-1960s rows have unrate_lag_days <= 0. This is not an error. In
   that era BLS published the Monthly Report on the Labor Force within the
@@ -158,6 +204,7 @@ TRAILING MONTH EXCLUDED
     dgs10        2026-09-03
     dtb3         2026-09-03
     unrate       n/a - not yet released for this month
+    cpi          n/a - not yet released for this month
 
   Rerun without --drop-partial-month to keep it as a month-to-date row.
 

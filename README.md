@@ -27,10 +27,11 @@ refetch, `--offline` to fail rather than hit the network.
 
 | Source | What | URL |
 | --- | --- | --- |
-| Robert Shiller, `ie_data.xls` | S&P Composite real total return index, CAPE | `https://shillerdata.com/` (current host; link scraped at runtime), fallback `http://www.econ.yale.edu/~shiller/data/ie_data.xls` |
+| Robert Shiller, `ie_data.xls` | S&P Composite real total return index, CAPE, CPI |","cpi-src `https://shillerdata.com/` (current host; link scraped at runtime), fallback `http://www.econ.yale.edu/~shiller/data/ie_data.xls` |
 | FRED `DGS10` | 10-year Treasury constant maturity yield, daily, % | `https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10` |
 | FRED `DTB3` | 3-month Treasury bill, secondary market, daily, % | `https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTB3` |
 | ALFRED `UNRATE` | Unemployment rate, **point-in-time first release** | `https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=UNRATE&vintage_date=...` |
+| FRED `CPIAUCNS` | CPI-U all items NSA — the authority used to verify `cpi` by value and to decide which months BLS actually published | `https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCNS` |
 
 Shiller's Yale page still serves `ie_data.xls`, but that copy is frozen at 2023-09.
 Shiller's current distribution is `shillerdata.com`. The script scrapes the live link
@@ -53,6 +54,7 @@ used is recorded in the provenance file. Do not assume the Yale copy is current.
 | `dgs10` | last business day of M | next business day | **1** | assumption |
 | `dtb3` | last business day of M | next business day | **1** | assumption |
 | `unrate` | calendar month M | actual BLS release | **measured per row** | observed ALFRED vintage date |
+| `cpi` | calendar month M | ~10th-15th of M+1 | **15** | assumption |
 
 ### Why each lag is what it is
 
@@ -80,6 +82,11 @@ is approximated as 1 calendar day, which is conservative in the right direction 
 you also respect the `>= ` comparison above; when month-end falls on a Friday the true
 lag is 3 calendar days. If that edge matters to your study, widen this to 3.
 
+**`cpi` — 15 days, assumed.**
+BLS publishes CPI for month M in the middle of M+1, typically between the 10th and the
+15th. So `cpi` for month M is not knowable at month-end M. This is the same release that
+`sp500_index` and `cape` depend on, and the three carry the same 15-day assumption.
+
 **`unrate` — measured, not assumed.**
 This is the series the discipline is actually about, and it is handled with real vintage
 data rather than an assumption. See below.
@@ -96,6 +103,7 @@ Read this before using the panel. The columns are not equally trustworthy.
 | `unrate` | **NO** for `date < 1960-02-29` | revised — predates ALFRED's archive |
 | `dgs10` | effectively yes | negligible — market rates, not revised |
 | `dtb3` | effectively yes | negligible — market rates, not revised |
+| `cpi` | effectively yes, once published | none — NSA CPI is **not revised**; see below |
 | `sp500_index` | **NO** | revised; see below |
 | `cape` | **NO** | revised; earnings tail interpolated; see below |
 
@@ -148,6 +156,26 @@ diffing the 2023-09 Yale release against the 2024-09 release:
 Practical consequence: use `sp500_index` for returns, not for levels, and treat the last
 two rows of any pull as provisional.
 
+### `cpi` is verified by value, and is not revised
+
+`cpi` is Shiller's column 4, but it is not trusted on the strength of its header. Every
+build re-checks it against FRED's `CPIAUCNS`, the same CPI-U all-items NSA series: on the
+current build **1362 of 1362 shared months match exactly, maximum difference 0.000000**.
+The 504 months before 1913-01 predate `CPIAUCNS` and are Shiller's splice of the
+Warren-Pearson index; they cannot be verified this way and are recorded as such.
+
+Unlike `unrate`, this series is **not revised**. Comparing ALFRED vintages 2015-01-16 and
+2026-08-12 for `CPIAUCNS`, **0 of 1224** overlapping observations changed. The
+*seasonally adjusted* series behaves differently — **60 of 816** changed over the same
+pair, by up to 0.462 — because its seasonal factors are re-estimated every year. Shiller
+uses the NSA series, so `cpi` is final on publication and carries no revision risk. It is
+still not knowable at month-end M; that is what the 15-day lag is for.
+
+**Shiller's own estimates are removed.** The workbook carries values BLS has not
+published, and says so in a footnote on the CPI column. Those are filled numbers, and this
+panel does not fill, so any month at or after 1913-01 that `CPIAUCNS` does not carry is
+set null. On the current build that removed three: **2025-10, 2026-08 and 2026-09**.
+
 ---
 
 ## Columns
@@ -164,11 +192,13 @@ interpolated.**
 | `dgs10` | float | 10y Treasury yield, %, last obs on or before month end |
 | `dtb3` | float | 3m Treasury bill, %, last obs on or before month end |
 | `unrate` | float | unemployment rate, %, first published value for month M |
+| `cpi` | float | CPI-U, all items, NSA, index 1982-1984 = 100, month M |
 | `sp500_index_lag_days` | int | 15 |
 | `cape_lag_days` | int | 15 |
 | `dgs10_lag_days` | int | 1 |
 | `dtb3_lag_days` | int | 1 |
 | `unrate_lag_days` | int | measured: `unrate_release_date - date` |
+| `cpi_lag_days` | int | 15 |
 | `unrate_release_date` | timestamp | ALFRED vintage in which this month first appeared |
 | `unrate_is_first_release` | bool | False = revised value, contaminated |
 
@@ -198,6 +228,15 @@ file on every build.
 - **Seven early-1960s rows have `unrate_lag_days <= 0`.** Not a bug. In that era BLS
   published the Monthly Report on the Labor Force *within* the reference month, so the
   number really was knowable before month end. A non-positive lag means no embargo applies.
+- **`cpi` has the same 2025-10 hole as `unrate`.** The shutdown cancelled the October
+  2025 CPI release as well as the household survey, so no October 2025 CPI exists. Shiller
+  supplies an estimate for it; the build nulls it. Both `unrate` and `cpi` are therefore
+  null at 2025-10, from the same cause.
+- **`sp500_index` and `cape` still carry values at those months**, because Shiller computed
+  his real series using his own estimated CPI. So `cpi` is null at 2025-10 while
+  `sp500_index` and `cape` are not. This is an inconsistency in the source that cannot be
+  fixed without recomputing the real series from nominal inputs, which this layer does not
+  do. Treat those two columns as provisional at 2025-10 and at the final month of any pull.
 - **The trailing row may be a partial month.** If the build runs mid-month, the last row is
   dated month-end but its values are month-to-date: Shiller's file carries a partial current
   month, and the daily yields stop at the last trading day so far. The row is kept rather
@@ -500,6 +539,14 @@ considered and rejected alternative so that adopting it later would be visible a
 would be.
 
 ---
+
+**Prerequisite of Amendment 1.2, satisfied 2026-09-06.** `cpi` has been added to the
+panel as a data-layer change: CPI-U all items NSA, month-end aligned, verified by value
+against `CPIAUCNS` (1362 of 1362 months exact), with Shiller's estimates for unpublished
+months nulled and a 15-day publication lag column. The blocker on computing the amended
+excess-return label is cleared. Note for the feature layer: `cpi` is null at 2025-10, so a
+12-month excess-return label whose window spans that month cannot be deflated and must be
+NaN under Rule 3 — the same treatment as `unrate`.
 
 **Amendments after Amendment 1: none as of 2026-09-06.**
 
