@@ -323,6 +323,23 @@ def verify_and_mask_cpi(shiller: pd.DataFrame, fetcher: Fetcher) -> tuple[pd.Dat
         log(f"  cpi: nulled {len(est_months)} Shiller estimate(s) for unpublished "
             f"months: {', '.join(est_months)}")
 
+    # Shiller's sp500_index and cape are REAL series: he divides nominal figures by the
+    # CPI of that same month. Where that deflator was his own estimate, the real value is
+    # a fabricated number wearing an observation's clothes, so it goes too. Verified
+    # read-only before this was enabled: nulling these months costs the pre-registered
+    # study sample (1962-02-28 to 2025-08-31) ZERO labelled observations, because every
+    # feature window looks backward and the only label endpoint that reaches them is
+    # already void on the null cpi at the same month.
+    derived_nulled = []
+    if est_months:
+        for col in ("sp500_index", "cape"):
+            hit = estimated & df[col].notna()
+            df.loc[hit, col] = np.nan
+            if hit.any():
+                derived_nulled.append(f"{col} x{int(hit.sum())}")
+        if derived_nulled:
+            log(f"  derived-from-cpi: nulled {', '.join(derived_nulled)} at the same months")
+
     pre = raw_cpi.notna() & (df["date"] < official_start)
     meta = {
         "value_source": "Shiller ie_data.xls, Data sheet (column located by header, verified by value)",
@@ -343,6 +360,12 @@ def verify_and_mask_cpi(shiller: pd.DataFrame, fetcher: Fetcher) -> tuple[pd.Dat
         ),
         "estimates_removed": len(est_months),
         "estimated_months_nulled": ", ".join(est_months) if est_months else "none",
+        "derived_columns_nulled": ", ".join(derived_nulled) if derived_nulled else "none",
+        "derived_null_rationale": (
+            "sp500_index and cape are Shiller's REAL series, deflated by the CPI of the "
+            "same month; where that deflator was his estimate the real value is fabricated. "
+            "Costs 0 labelled observations in the 1962-02-28..2025-08-31 study sample."
+        ),
         "revised": "NO - NSA CPI is final on publication; see the CPI note in the header",
     }
     return df, meta
@@ -689,12 +712,36 @@ def render_header(panel: pd.DataFrame, sources: dict, ranges: dict, pulled: str,
             "  cancelled that CPI release too, so no October 2025 CPI exists. The others",
             "  are simply not published yet at the pull date.",
             "",
-            "  NOTE, and this is an inconsistency worth knowing about rather than hiding:",
-            "  sp500_index and cape are Shiller's REAL series, computed by him using that",
-            "  same estimated CPI. So cpi is null at those months while sp500_index and",
-            "  cape carry values there that depend on an estimated deflator. Those two",
-            "  columns cannot be corrected without recomputing them from nominal inputs,",
-            "  which this layer does not do. Treat them as provisional at those months.",
+            "  sp500_index and cape are nulled at those same months. They are Shiller's",
+            "  REAL series, deflated by the CPI of that same month, so where the deflator",
+            "  was his estimate the real value is fabricated too: a real series divided by",
+            "  a fabricated deflator is fabricated. Verified read-only before this was",
+            "  enabled - it costs the pre-registered study sample (1962-02-28 to",
+            "  2025-08-31) ZERO labelled observations, because every feature window looks",
+            "  backward and cannot reach these months, and the one label endpoint that",
+            "  does reach 2025-10 is already void on the null cpi at that same month.",
+            "",
+            "-" * 86,
+            "2025-10 IS A SINGLE-CAUSE GAP",
+            "-" * 86,
+            "",
+            "  One event - the US government shutdown - removed October 2025 from this",
+            "  panel across every column that depends on a statistical agency:",
+            "",
+            "    cpi          BLS cancelled the October 2025 CPI release",
+            "    unrate       no household survey was conducted for October 2025",
+            "    sp500_index  derived: Shiller's real series needs the missing CPI",
+            "    cape         derived: same missing deflator",
+            "",
+            "  These are NOT four independent gaps and must not be treated as such. Any",
+            "  imputation that borrows across them is circular, because the thing missing",
+            "  from each is the same thing. dgs10 and dtb3 are unaffected: Treasury markets",
+            "  traded throughout, and those series are complete at 2025-10.",
+            "",
+            "  Consequence for the feature layer: a window spanning 2025-10 is NaN for all",
+            "  four columns at once, so features built on them fail together rather than",
+            "  degrading one at a time. Do not read agreement between them there as",
+            "  corroboration - it is one absence counted four times.",
             "",
         ]
     nonpos = sources["unrate"].get("measured_lag_days_nonpositive")

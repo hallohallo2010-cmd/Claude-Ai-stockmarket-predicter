@@ -175,6 +175,8 @@ still not knowable at month-end M; that is what the 15-day lag is for.
 published, and says so in a footnote on the CPI column. Those are filled numbers, and this
 panel does not fill, so any month at or after 1913-01 that `CPIAUCNS` does not carry is
 set null. On the current build that removed three: **2025-10, 2026-08 and 2026-09**.
+`sp500_index` and `cape` are nulled at those same months, because they are deflated by
+that estimate — see **2025-10 is a single-cause gap** below.
 
 ---
 
@@ -228,15 +230,7 @@ file on every build.
 - **Seven early-1960s rows have `unrate_lag_days <= 0`.** Not a bug. In that era BLS
   published the Monthly Report on the Labor Force *within* the reference month, so the
   number really was knowable before month end. A non-positive lag means no embargo applies.
-- **`cpi` has the same 2025-10 hole as `unrate`.** The shutdown cancelled the October
-  2025 CPI release as well as the household survey, so no October 2025 CPI exists. Shiller
-  supplies an estimate for it; the build nulls it. Both `unrate` and `cpi` are therefore
-  null at 2025-10, from the same cause.
-- **`sp500_index` and `cape` still carry values at those months**, because Shiller computed
-  his real series using his own estimated CPI. So `cpi` is null at 2025-10 while
-  `sp500_index` and `cape` are not. This is an inconsistency in the source that cannot be
-  fixed without recomputing the real series from nominal inputs, which this layer does not
-  do. Treat those two columns as provisional at 2025-10 and at the final month of any pull.
+- **2025-10 is a single-cause gap.** See the section below.
 - **The trailing row may be a partial month.** If the build runs mid-month, the last row is
   dated month-end but its values are month-to-date: Shiller's file carries a partial current
   month, and the daily yields stop at the last trading day so far. The row is kept rather
@@ -245,6 +239,58 @@ file on every build.
 
 Measured `unrate` publication lag across the 798 first-release rows: min -2, median 5,
 max 51 days.
+
+---
+
+## 2025-10 IS A SINGLE-CAUSE GAP
+
+One event — the US government shutdown — removed October 2025 from this panel across
+**every column that depends on a statistical agency**:
+
+| Column | Why it is null at 2025-10 |
+| --- | --- |
+| `cpi` | BLS cancelled the October 2025 CPI release |
+| `unrate` | no household survey was conducted for October 2025 |
+| `sp500_index` | **derived** — Shiller's real series is deflated by the missing CPI |
+| `cape` | **derived** — same missing deflator |
+
+`dgs10` and `dtb3` are unaffected and complete at 2025-10: Treasury markets traded
+throughout.
+
+**These are not four independent gaps and must not be treated as such.** Any imputation
+that borrows across them is circular, because the thing missing from each is the same
+thing. Nor is their agreement evidence of anything: a feature layer that sees all four
+columns fail at once is looking at one absence counted four times, not at four
+corroborating signals. Windows spanning 2025-10 fail together rather than degrading one
+at a time.
+
+### Why `sp500_index` and `cape` are nulled there too
+
+Shiller's `sp500_index` and `cape` are **real** series: he divides nominal figures by the
+CPI of that same month. Where that deflator was his own estimate rather than a BLS
+publication, the real value is a fabricated number wearing an observation's clothes. A
+real series divided by a fabricated deflator is fabricated, so it is nulled on exactly the
+principle already applied to the CPI estimates themselves.
+
+This was measured read-only before it was done. Nulling `sp500_index` and `cape` at those
+months costs the pre-registered study sample (1962-02-28 to 2025-08-31) **zero labelled
+observations**: 761 usable before, 761 after. Every feature window looks backward and
+cannot reach 2025-10 from a decision point at or before 2025-08-31, and the single label
+endpoint that does reach it — the 12-month label at decision 2024-10-31 — was already void
+because `cpi` is null at that same endpoint.
+
+Two observations in the study sample are unusable, both from null `cpi` at a label
+endpoint, neither caused by this change:
+
+| Decision month | Label endpoint M+12 | Status |
+| --- | --- | --- |
+| 2024-10-31 | 2025-10 | **permanent** — October 2025 CPI will never exist |
+| 2025-08-31 | 2026-08 | **temporary** — returns once BLS publishes August 2026 CPI |
+
+One caveat worth recording: this zero holds under the **amended** excess-return label,
+which needs `cpi` at both endpoints. Under the original superseded label, which needed no
+CPI, the same change would have cost **one** observation (2024-10-31). The answer depends
+on which label is in force, and the amended one is.
 
 ---
 
@@ -629,6 +675,11 @@ revised, contaminated era without a second filter.
 `unrate` has no value for October 2025 and never will. No household survey was conducted,
 BLS published no rate, and none of ALFRED's 799 vintages carries one. It is not missing
 data to be recovered; it is a month that does not exist.
+
+**The rule now covers four columns, not one.** `cpi`, `sp500_index` and `cape` are null at
+2025-10 for the same single cause — see **2025-10 is a single-cause gap**. Everything below
+applies to each of them, and they fail together: a window spanning that month voids all
+four at once.
 
 **Decision, explicitly:**
 
