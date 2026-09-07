@@ -33,7 +33,11 @@ The four binding rules from README.md are implemented as follows.
 from __future__ import annotations
 
 import argparse
+import ast
+import copy
+import hashlib
 import json
+import os
 import datetime as dt
 from pathlib import Path
 
@@ -55,6 +59,76 @@ LABEL_HORIZON = 12          # pre-registered label horizon
 EXPECTED_COMPLETE_ROWS = 761
 
 FEATURES = ["cape_z", "yield_slope", "momentum_12m", "unrate_trend_12m"]
+
+# --------------------------------------------------------------------------------------
+# Definition hash
+# --------------------------------------------------------------------------------------
+# Names whose bodies and values ARE the feature and label definitions. The hash covers
+# these and nothing else, so it changes when a formula or a window changes and does not
+# change when a comment is reworded.
+DEFINITION_FUNCTIONS = (
+    "full_span_valid", "available_ref_month", "shift_to_decisions",
+    "build_features", "build_label",
+)
+DEFINITION_CONSTANTS = (
+    "SAMPLE_START", "SAMPLE_END", "CAPE_MIN_PERIODS", "WINDOW_MONTHS",
+    "LABEL_HORIZON", "FEATURES",
+)
+DEFINITION_HASH_KEY = b"feature_definition_sha256"
+
+
+def _canonical_source(name: str, tree: ast.Module) -> str:
+    """A function's source with comments, docstring and formatting normalised away.
+
+    Round-tripping through the AST drops comments and formatting by construction, so the
+    hash tracks semantics rather than presentation. The docstring is stripped explicitly
+    because it survives the round trip.
+    """
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            node = copy.deepcopy(node)
+            if (node.body and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)):
+                node.body = node.body[1:]
+            if not node.body:
+                raise ValueError(f"{name} has an empty body after stripping its docstring")
+            return ast.unparse(node)
+    raise ValueError(f"definition function {name!r} not found in source")
+
+
+def definition_hash(source_path: Path | None = None) -> str:
+    """Hash of the formulas and window specs AS IMPLEMENTED, never of the output values.
+
+    A hash over output values would agree with itself whenever a stale file was left in
+    place, which is precisely the failure this exists to catch. Hashing the implementation
+    means a file written by different definitions is detectable without recomputing it.
+    """
+    src = Path(source_path or __file__).read_text()
+    tree = ast.parse(src)
+    payload = {
+        "functions": {n: _canonical_source(n, tree) for n in DEFINITION_FUNCTIONS},
+        "constants": {c: repr(globals()[c]) for c in DEFINITION_CONSTANTS},
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def write_atomic(table: pa.Table, out: Path) -> None:
+    """Write to a temp path in the same directory and rename on success.
+
+    An interrupted write must never leave a readable file behind. os.replace is atomic
+    within a filesystem, so a reader sees either the previous file or the complete new
+    one, never a truncated one.
+    """
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(f".{out.name}.tmp{os.getpid()}")
+    try:
+        pq.write_table(table, tmp, compression="snappy")
+        os.replace(tmp, out)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 # --------------------------------------------------------------------------------------
@@ -317,14 +391,24 @@ def main() -> int:
     feats["label"] = build_label(panel, decisions).to_numpy()
     feats = feats[["date"] + FEATURES + ["label"]]
 
-    ok = verify(panel, feats, aux)
-    explain_nulls(feats, panel, aux)
-
     complete = feats[FEATURES + ["label"]].notna().all(axis=1)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
+    dhash = definition_hash()
+
+    # Gate BEFORE writing: a sample that does not match the pre-registered count is not
+    # written at all, so a failed build cannot leave a plausible-looking file behind.
+    if int(complete.sum()) != EXPECTED_COMPLETE_ROWS:
+        print(f"STOP: {int(complete.sum())} complete rows, expected "
+              f"{EXPECTED_COMPLETE_ROWS}. Nothing written, nothing adjusted.")
+        return 2
+
+    # Write BEFORE reporting. The report is long and goes to a pipe that may close early;
+    # doing the write first means a broken pipe can never leave the previous file in
+    # place while the run appears to have succeeded. That is the failure this ordering,
+    # the atomic rename and the definition hash exist to make impossible.
     table = pa.Table.from_pandas(feats, preserve_index=False)
     table = table.replace_schema_metadata({
         **(table.schema.metadata or {}),
+        DEFINITION_HASH_KEY: dhash.encode(),
         b"features_provenance_json": json.dumps({
             "built_by": "scripts/build_features.py",
             "built_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -333,8 +417,10 @@ def main() -> int:
             "rows": len(feats),
             "complete_rows": int(complete.sum()),
             "features": FEATURES,
+            "definition_sha256": dhash,
             "cape_z_min_periods": CAPE_MIN_PERIODS,
             "window_months": WINDOW_MONTHS,
+            "unrate_trend_12m": "latest available rate minus its 12-month trailing mean",
             "label": ("sign of the 12-month forward excess return, equity real total "
                       "return minus real compounded 3-month bill return; 1 if positive"),
             "rules": [
@@ -345,11 +431,29 @@ def main() -> int:
             ],
         }, indent=2).encode(),
     })
-    pq.write_table(table, args.out, compression="snappy")
+    write_atomic(table, args.out)
+
+    # Re-read from disk. Everything reported below describes the FILE, not the frame that
+    # was just built in memory.
+    pf = pq.ParquetFile(args.out)
+    stored = (pf.schema_arrow.metadata or {}).get(DEFINITION_HASH_KEY, b"").decode()
+    on_disk = pf.read().to_pandas()
+    if stored != dhash:
+        print(f"STOP: definition hash did not round-trip. file={stored!r} source={dhash!r}")
+        return 2
+    if not on_disk.equals(feats):
+        print("STOP: the file on disk does not match what was just computed.")
+        return 2
+
+    ok = verify(panel, on_disk, aux)
+    explain_nulls(on_disk, panel, aux)
 
     print("\n" + "=" * 78)
-    print(f"Wrote {args.out.relative_to(REPO_ROOT)}  ({len(feats)} rows, "
-          f"{int(complete.sum())} complete)")
+    print(f"Wrote {args.out.relative_to(REPO_ROOT)}  ({len(on_disk)} rows, "
+          f"{int(on_disk[FEATURES + ['label']].notna().all(axis=1).sum())} complete)")
+    print(f"Definition hash : {dhash}")
+    print("Verified above against the file re-read from disk, not the in-memory frame.")
+    print("Independent gate: python scripts/audit_features.py")
     print("Deliberately not reported: the label's positive rate, class balance, and any")
     print("feature-label association. The baseline is re-estimated inside each fold.")
     print("=" * 78)
