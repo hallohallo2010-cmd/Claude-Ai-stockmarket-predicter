@@ -916,6 +916,54 @@ rather than adjusting anything.
 and no feature-label association. The baseline is re-estimated inside each walk-forward
 fold, and seeing the pooled rate now would contaminate every later judgement.
 
+### Making a definition mismatch impossible to ship silently
+
+This is a guard against a failure that actually happened. A build was piped through
+`head`; the process died on a broken pipe **before writing**; exit status and printed
+output both looked clean; and `data/features.parquet` still held a withdrawn definition of
+`unrate_trend_12m`. Only a hand-recomputation against the file caught it. Vigilance found
+it once and cannot be relied on to find it again, so three structural changes make it
+detectable without anyone remembering to look.
+
+**1. A definition hash in the parquet metadata.** `build_features.py` hashes the feature
+and label formulas *as implemented* — the source of the five definition-bearing functions
+plus the window constants — and stores it under `feature_definition_sha256`. The source is
+round-tripped through Python's AST first, so the hash tracks semantics: rewording a
+comment leaves it unchanged, changing a formula or a window does not. It is deliberately
+**not** a hash of the output values, because such a hash agrees with itself whenever a
+stale file is left in place, which is exactly the failure being guarded against.
+
+**2. An independent audit that trusts nothing from the build.** `scripts/audit_features.py`
+runs in its own process, reads the parquet **from disk**, recomputes the hash from the
+current source, and exits non-zero on mismatch. It never sees the build's in-memory
+dataframe. It then goes further: it recomputes every feature through the build module and
+compares values, recomputes `cape_z` and `unrate_trend_12m` a third time in plain pandas
+here, and rebuilds the availability map with a naive loop to cross-check the build's
+`searchsorted`-and-running-maximum against an obvious implementation.
+
+```bash
+python scripts/audit_features.py     # exit 0 = pass, 2 = fail
+```
+
+**3. Atomic writes, and the write before the report.** The parquet is written to a temp
+path in the same directory and renamed on success, so an interrupted write leaves either
+the previous complete file or none — never a truncated one. The build also writes *before*
+printing its report, so a broken pipe during output can no longer leave a stale file
+behind while the run appears to have succeeded.
+
+All three were tested by reproducing the original failure:
+
+| Test | Result |
+| --- | --- |
+| Source changed to the withdrawn definition, parquet left untouched | audit **fails**, exit 2, naming the hash mismatch |
+| `build_features.py \| head -3` — the original broken pipe | build exits non-zero, but the file is already correct; audit passes |
+| Write interrupted mid-flight | original file byte-identical, no temp file left, audit passes |
+
+The audit also caught a bug in itself on first run: its naive-versus-vectorised comparison
+reported a difference that turned out to be `datetime64[us]` against `[ns]`, not a
+difference in data. That is the behaviour wanted from a gate — fail loudly and let the
+discrepancy be run down, rather than pass quietly.
+
 ---
 
 ## Provenance
