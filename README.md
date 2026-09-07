@@ -312,7 +312,7 @@ Four features. No more, no fewer.
 | `cape_z` | Expanding z-score of CAPE: value minus expanding mean, over expanding standard deviation | Expanding, minimum warm-up 120 months | `cape` |
 | `yield_slope` | 10-year yield minus 3-month bill, in percentage points | Contemporaneous, no window | `dgs10`, `dtb3` |
 | `mom_12m` | 12-month price momentum: log change in the total return index over 12 months | 12 months | `sp500_index` |
-| `unrate_trend_12m` | Unemployment trend: latest rate minus its 12-month trailing mean | 12 months | `unrate`, `unrate_lag_days` |
+| `unrate_trend_12m` | Unemployment trend — **redefined by Amendment 2 (2026-09-07)** to the 12-month change; original text kept here for the record: latest rate minus its 12-month trailing mean | 12 months | `unrate`, `unrate_lag_days` |
 
 No interaction terms, no polynomial expansions, no alternative windows, no regime dummies,
 no additional series. If a fifth feature or a different window later looks necessary, it
@@ -594,7 +594,31 @@ excess-return label is cleared. Note for the feature layer: `cpi` is null at 202
 12-month excess-return label whose window spans that month cannot be deflated and must be
 NaN under Rule 3 — the same treatment as `unrate`.
 
-**Amendments after Amendment 1: none as of 2026-09-06.**
+---
+
+#### Amendment 2 — 2026-09-07
+
+Made when the feature layer was built, before any model exists.
+
+**2.1 — `unrate_trend_12m` redefined.** From *latest rate minus its 12-month trailing
+mean* to the **12-month change**: the latest available rate minus the rate twelve months
+earlier. Directed as part of the feature-layer specification. Section 1's original wording
+is preserved above with a pointer to this entry.
+
+Both definitions read the same 12-month window and both are void when that window spans
+the 2025-10 gap, so coverage is unchanged: the study sample still holds **761** complete
+observations, the figure computed read-only before the feature layer was written. The
+change alters what the feature measures — a difference between two endpoints rather than a
+deviation from a mean — not which rows exist.
+
+**2.2 — Window-span convention recorded.** `momentum_12m` and `unrate_trend_12m` are
+two-endpoint formulas, but Rule 4 says a window *spanning* the gap is void, so both are
+computed as NaN unless all 13 months of their span are present. This is stricter than the
+arithmetic needs. It costs nothing here — no in-sample feature window reaches 2025-10, the
+newest reference month any feature uses being 2025-07 — and it is recorded so the stricter
+reading is a stated choice rather than an accident.
+
+**Amendments after Amendment 2: none as of 2026-09-07.**
 
 ---
 
@@ -726,6 +750,60 @@ window of 11 months or more is **NaN for the entire remainder of the panel**:
 That is the correct outcome, not a bug to engineer around. A 12-month unemployment
 feature has no valid values after September 2025, and any backtest reporting results
 there is reporting something it invented.
+
+---
+
+## Feature layer
+
+`scripts/build_features.py` reads `data/market_panel.parquet` and writes
+`data/features.parquet`: the four pre-registered features and the label, on monthly
+decision points from 1962-02-28 to 2025-08-31. Features and label only — no model, no
+training, no evaluation.
+
+```bash
+python scripts/build_features.py
+```
+
+| Column | Definition |
+| --- | --- |
+| `date` | decision month-end |
+| `cape_z` | CAPE expanding z-score, 120-month warm-up |
+| `yield_slope` | `dgs10` − `dtb3` |
+| `momentum_12m` | 12-month trailing return of `sp500_index` |
+| `unrate_trend_12m` | 12-month change in `unrate` (Amendment 2) |
+| `label` | 1 if the 12-month forward excess return of equities over bills is positive |
+
+**763 rows, 761 complete.** The two incomplete rows are 2024-10-31 and 2025-08-31, both
+because `cpi` is null at their label endpoint — 2025-10 permanently, 2026-08 until BLS
+publishes. No feature has a single null: the expanding warm-up is exhausted long before
+1962, and no in-sample feature window reaches the 2025-10 gap.
+
+**The label.** `sp500_index` is *already* Shiller's real total return index, so the equity
+leg is not deflated again — double-deflating it would be wrong. The bill leg is a nominal
+yield and is deflated by the window's own inflation, `cpi(M)/cpi(M+12)`, which is what puts
+the two legs in the same units. The equity index's rebasing constant cancels in the ratio.
+Bill compounding follows the pre-registered convention: `dtb3` from M+1 through M+12,
+each quoted annualised rate treated as an effective annual rate.
+
+**How the four rules are enforced.** Windows are computed on the reference-month series
+that carries the NaN, and the availability shift is applied to the *result* — never the
+reverse, which would turn the 2025-10 gap into a stale repeat. Availability is read from
+each series' own lag column; no lag is hardcoded anywhere in the file, so the measured
+per-row `unrate` lags are honoured alongside the constant 15- and 1-day ones. Rows are
+ordered by availability date with a running maximum of the reference month, so a late
+release such as `unrate` 2025-09, published 51 days behind, can never make an older month
+look like the newest available one.
+
+**Verified on every build**, not just at three sampled points: across all 763 decision
+points and all four features, **zero inputs postdate their decision** — 3,052 checks. The
+expanding z-score is recomputed by hand at several dates and matches to 1e-10, and it
+differs from a full-sample z by 0.51 sd on average, disagreeing on sign in 10.4% of
+in-sample months. If the complete-row count ever departs from 761 the script stops and
+says so rather than adjusting anything.
+
+**Not reported, by design.** The build prints no label positive rate, no class balance,
+and no feature-label association. The baseline is re-estimated inside each walk-forward
+fold, and seeing the pooled rate now would contaminate every later judgement.
 
 ---
 
