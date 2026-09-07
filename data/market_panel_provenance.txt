@@ -3,7 +3,7 @@ MARKET TIMING PANEL - PROVENANCE AND POINT-IN-TIME HEADER
 ======================================================================================
 
 Built by      : scripts/build_market_panel.py
-Pull date     : 2026-09-06 21:34:14 UTC
+Pull date     : 2026-09-06 21:54:23 UTC
 Rows          : 1868
 Date range    : 1871-01-31 -> 2026-08-31
 Frequency     : monthly, month-end aligned
@@ -36,6 +36,8 @@ SOURCES
   pre_authority_note      : months before 1913-01-31 predate CPIAUCNS and are Shiller's splice of the Warren-Pearson index; they cannot be verified here
   estimates_removed       : 3
   estimated_months_nulled : 2025-10-31, 2026-08-31, 2026-09-30
+  derived_columns_nulled  : sp500_index x3, cape x3
+  derived_null_rationale  : sp500_index and cape are Shiller's REAL series, deflated by the CPI of the same month; where that deflator was his estimate the real value is fabricated. Costs 0 labelled observations in the 1962-02-28..2025-08-31 study sample.
   revised                 : NO - NSA CPI is final on publication; see the CPI note in the header
 
 [dgs10]
@@ -80,16 +82,16 @@ A value on row `date` must be treated as unknown until date + lag_days.
 A signal formed at month-end M may only use rows where date + lag_days <= M.
 
 [sp500_index]
-  observed range          : 1871-01-31 -> 2026-08-31
-  non-null / null         : 1868 / 0
-  gaps inside that range  : 0  none
+  observed range          : 1871-01-31 -> 2026-07-31
+  non-null / null         : 1866 / 2
+  gaps inside that range  : 1  2025-10-31
   lag_days                : 15
   lag basis               : assumed: CPI for month M published ~15th of M+1
 
 [cape]
-  observed range          : 1881-01-31 -> 2026-08-31
-  non-null / null         : 1748 / 120
-  gaps inside that range  : 0  none
+  observed range          : 1881-01-31 -> 2026-07-31
+  non-null / null         : 1746 / 122
+  gaps inside that range  : 1  2025-10-31
   lag_days                : 15
   lag basis               : assumed LOWER BOUND: CPI lag; earnings tail interpolated and later revised
 
@@ -179,12 +181,36 @@ KNOWN GAPS AND LAG ANOMALIES
   cancelled that CPI release too, so no October 2025 CPI exists. The others
   are simply not published yet at the pull date.
 
-  NOTE, and this is an inconsistency worth knowing about rather than hiding:
-  sp500_index and cape are Shiller's REAL series, computed by him using that
-  same estimated CPI. So cpi is null at those months while sp500_index and
-  cape carry values there that depend on an estimated deflator. Those two
-  columns cannot be corrected without recomputing them from nominal inputs,
-  which this layer does not do. Treat them as provisional at those months.
+  sp500_index and cape are nulled at those same months. They are Shiller's
+  REAL series, deflated by the CPI of that same month, so where the deflator
+  was his estimate the real value is fabricated too: a real series divided by
+  a fabricated deflator is fabricated. Verified read-only before this was
+  enabled - it costs the pre-registered study sample (1962-02-28 to
+  2025-08-31) ZERO labelled observations, because every feature window looks
+  backward and cannot reach these months, and the one label endpoint that
+  does reach 2025-10 is already void on the null cpi at that same month.
+
+--------------------------------------------------------------------------------------
+2025-10 IS A SINGLE-CAUSE GAP
+--------------------------------------------------------------------------------------
+
+  One event - the US government shutdown - removed October 2025 from this
+  panel across every column that depends on a statistical agency:
+
+    cpi          BLS cancelled the October 2025 CPI release
+    unrate       no household survey was conducted for October 2025
+    sp500_index  derived: Shiller's real series needs the missing CPI
+    cape         derived: same missing deflator
+
+  These are NOT four independent gaps and must not be treated as such. Any
+  imputation that borrows across them is circular, because the thing missing
+  from each is the same thing. dgs10 and dtb3 are unaffected: Treasury markets
+  traded throughout, and those series are complete at 2025-10.
+
+  Consequence for the feature layer: a window spanning 2025-10 is NaN for all
+  four columns at once, so features built on them fail together rather than
+  degrading one at a time. Do not read agreement between them there as
+  corroboration - it is one absence counted four times.
 
   7 early-1960s rows have unrate_lag_days <= 0. This is not an error. In
   that era BLS published the Monthly Report on the Labor Force within the
