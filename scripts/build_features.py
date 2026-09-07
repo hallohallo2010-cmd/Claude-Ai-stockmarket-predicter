@@ -5,7 +5,10 @@ Features and label only. No model, no training, no evaluation, and nothing here
 reports the label's distribution.
 
 Sample     : 1962-02-28 to 2025-08-31, monthly decision points.
-Features   : cape_z, yield_slope, momentum_12m, unrate_trend_12m. Exactly these four.
+Features   : cape_z, yield_slope, momentum_12m, unrate_trend_12m. Exactly these four,
+             as pre-registered. unrate_trend_12m is the latest available rate minus its
+             12-month trailing mean; Amendment 2, which had redefined it as a 12-month
+             change, is WITHDRAWN.
 Label      : sign of the 12-month forward excess return of equities over 3-month bills,
              both legs in real terms.
 
@@ -96,10 +99,11 @@ def shift_to_decisions(
 def full_span_valid(s: pd.Series, span: int) -> pd.Series:
     """True where every one of the last `span` observations is non-null.
 
-    Rule 4 read literally: a window that spans the 2025-10 gap is void, even if the
-    formula only touches its endpoints. Strictly this is stronger than a two-endpoint
-    return needs; it is what the rule says, and in this sample it costs nothing because
-    no in-sample feature window reaches 2025-10.
+    For unrate_trend_12m this is simply what the formula needs: a trailing mean reads all
+    12 months. For momentum_12m, a two-endpoint return, it is Rule 4 read literally - a
+    window that SPANS the 2025-10 gap is void even though the arithmetic touches only its
+    endpoints. That stricter reading costs nothing here, because no in-sample feature
+    window reaches 2025-10.
     """
     return s.notna().rolling(span, min_periods=span).sum().eq(span)
 
@@ -127,9 +131,13 @@ def build_features(panel: pd.DataFrame, decisions: pd.DatetimeIndex) -> tuple[pd
     sp = p["sp500_index"]
     mom_ref = (sp / sp.shift(WINDOW_MONTHS) - 1.0).where(full_span_valid(sp, WINDOW_MONTHS + 1))
 
-    # --- unrate_trend_12m: 12-month change ---
+    # --- unrate_trend_12m: latest rate minus its 12-month trailing mean ---
+    # Pre-registered definition. Unlike momentum this is not a two-endpoint formula: it
+    # genuinely reads all 12 months, so requiring the full span is the natural rule here
+    # rather than the stricter reading of Rule 4.
     un = p["unrate"]
-    trend_ref = (un - un.shift(WINDOW_MONTHS)).where(full_span_valid(un, WINDOW_MONTHS + 1))
+    trailing_mean = un.rolling(WINDOW_MONTHS, min_periods=WINDOW_MONTHS).mean()
+    trend_ref = (un - trailing_mean).where(full_span_valid(un, WINDOW_MONTHS))
 
     work = panel.copy()
     work["_slope_lag"] = slope_lag.to_numpy()
@@ -235,11 +243,11 @@ def verify(panel: pd.DataFrame, feats: pd.DataFrame, aux: dict) -> bool:
             if feat == "momentum_12m":
                 back = (ref - pd.DateOffset(months=WINDOW_MONTHS)) + pd.offsets.MonthEnd(0)
                 print(f"     {'':<17}{'  (window)':<12}{str(back.date())} .. {ref.date()}"
-                      f"   both endpoints in the past")
+                      f"   all {WINDOW_MONTHS + 1} months in the past")
             if feat == "unrate_trend_12m":
-                back = (ref - pd.DateOffset(months=WINDOW_MONTHS)) + pd.offsets.MonthEnd(0)
+                back = (ref - pd.DateOffset(months=WINDOW_MONTHS - 1)) + pd.offsets.MonthEnd(0)
                 print(f"     {'':<17}{'  (window)':<12}{str(back.date())} .. {ref.date()}"
-                      f"   both endpoints in the past")
+                      f"   all {WINDOW_MONTHS} months in the past")
 
     print("\n3. cape_z recomputed by hand at an early decision point, using ONLY prior data.")
     M = pd.Timestamp("1965-06-30")

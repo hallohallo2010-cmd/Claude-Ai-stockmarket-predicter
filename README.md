@@ -312,7 +312,7 @@ Four features. No more, no fewer.
 | `cape_z` | Expanding z-score of CAPE: value minus expanding mean, over expanding standard deviation | Expanding, minimum warm-up 120 months | `cape` |
 | `yield_slope` | 10-year yield minus 3-month bill, in percentage points | Contemporaneous, no window | `dgs10`, `dtb3` |
 | `mom_12m` | 12-month price momentum: log change in the total return index over 12 months | 12 months | `sp500_index` |
-| `unrate_trend_12m` | Unemployment trend — **redefined by Amendment 2 (2026-09-07)** to the 12-month change; original text kept here for the record: latest rate minus its 12-month trailing mean | 12 months | `unrate`, `unrate_lag_days` |
+| `unrate_trend_12m` | Unemployment trend: latest rate minus its 12-month trailing mean | 12 months | `unrate`, `unrate_lag_days` |
 
 No interaction terms, no polynomial expansions, no alternative windows, no regime dummies,
 no additional series. If a fifth feature or a different window later looks necessary, it
@@ -596,7 +596,28 @@ NaN under Rule 3 — the same treatment as `unrate`.
 
 ---
 
-#### Amendment 2 — 2026-09-07
+#### Amendment 2 — 2026-09-07 — ~~WITHDRAWN~~
+
+> **WITHDRAWN 2026-09-07, in full, before any model or result existed.**
+>
+> This amendment recorded an **error in the instruction that prompted it**, not a design
+> decision. `unrate_trend_12m` was never intended to change; the feature-layer
+> specification restated it incorrectly, and the amendment faithfully wrote that mistake
+> into the log. **The pre-registration governs**, so section 1's definition — latest
+> available rate minus its 12-month trailing mean — stands unaltered and section 1 has
+> been restored to its original wording.
+>
+> `data/features.parquet` has been rebuilt on the pre-registered definition and the full
+> audit re-run: **761** complete rows, unchanged, and 0 availability violations across
+> 3,052 checks.
+>
+> The entry is kept rather than deleted, because a withdrawn amendment is part of the
+> record: it shows what was proposed, that it was acted on, and that it was reversed
+> before any result could depend on it. Its text is preserved verbatim below and is **no
+> longer operative**. Item 2.2 concerned `momentum_12m` as well and remains true of that
+> feature; it is re-recorded as Amendment 3.2 so it does not lapse with this withdrawal.
+
+*Original text, no longer in force:*
 
 Made when the feature layer was built, before any model exists.
 
@@ -618,7 +639,65 @@ arithmetic needs. It costs nothing here — no in-sample feature window reaches 
 newest reference month any feature uses being 2025-07 — and it is recorded so the stricter
 reading is a stated choice rather than an accident.
 
-**Amendments after Amendment 2: none as of 2026-09-07.**
+---
+
+#### Amendment 3 — 2026-09-07
+
+Written before any model exists and before any result has been produced.
+
+**3.1 — The sample refresh rule, fixed now.**
+
+August 2026 CPI is due within days. When BLS publishes it, a panel rebuild will restore
+`cpi` and `sp500_index` at 2026-08, which restores the label at decision **2025-08-31**
+and takes the study sample from **761** usable rows to **762**. The extra row falls in the
+holdout, taking it from 188 month-ends to 189 and from 15 to 15 independent
+non-overlapping observations — the block count does not change.
+
+**The sample may be refreshed exactly once, under all of these conditions:**
+
+1. **Once only.** This single refresh is authorised and no other. Later CPI releases,
+   later Shiller releases, and any change to the sample end date of 2025-08-31 are **not**
+   authorised and would each need their own amendment, written before the fact.
+2. **Before the model is frozen.** The refresh must happen while the model class,
+   hyperparameters and feature transforms are still open, so it cannot be a response to
+   anything the model has done.
+3. **Never after the holdout is read.** Once the holdout is read the sample is closed
+   permanently. If the holdout is read before the refresh happens, **the refresh is
+   forfeited** and the 761-row sample stands as final.
+4. **Whole rebuild, not a hand-edit.** `build_market_panel.py` and `build_features.py` are
+   re-run end to end. No row is patched in place.
+5. **Existing rows must not move.** The refresh is expected to *add* a row without
+   perturbing the 761 already there: Shiller's revisions are confined to the final month
+   or two of each release, far after the 2025-08-31 sample end, and his rebasing constant
+   cancels in both the momentum ratio and the label ratio. The refresh must verify this —
+   if any existing row's features or label change materially, stop and report rather than
+   proceeding.
+6. **Dated here when performed**, with the resulting row count.
+
+**Why this is fixed now rather than decided later.** A sample that grows after results are
+known is a researcher degree of freedom. One extra observation is exactly the size of
+thing that can move a marginal result across a threshold, and an analyst who has seen a
+near-miss and then chooses to refresh is making a different decision from one who fixed
+the rule in advance — even with identical arithmetic and entirely honest intent. Writing
+the rule down before any result exists removes the choice, which is the only reliable way
+to remove the bias.
+
+**3.2 — Window-span convention for `momentum_12m`** (re-recorded from the withdrawn
+Amendment 2.2, which stated it correctly for this feature).
+
+`momentum_12m` is a two-endpoint formula: a 12-month return needs only the index at both
+ends, because the total-return index already compounds what happens in between. Rule 4
+nonetheless says a window *spanning* the 2025-10 gap is void, so it is computed as NaN
+unless all 13 months of its span are present. This is stricter than the arithmetic
+requires and is a deliberate reading of the rule, not an accident. It costs nothing in
+this sample: no in-sample feature window reaches 2025-10, the newest reference month any
+feature uses being 2025-07.
+
+`unrate_trend_12m` needs no such convention under the restored definition — a trailing
+mean genuinely reads all 12 months of its window, so requiring the full span is simply
+what the formula needs.
+
+**Amendments after Amendment 3: none as of 2026-09-07.**
 
 ---
 
@@ -770,7 +849,7 @@ python scripts/build_features.py
 | `cape_z` | CAPE expanding z-score, 120-month warm-up |
 | `yield_slope` | `dgs10` − `dtb3` |
 | `momentum_12m` | 12-month trailing return of `sp500_index` |
-| `unrate_trend_12m` | 12-month change in `unrate` (Amendment 2) |
+| `unrate_trend_12m` | latest available `unrate` minus its 12-month trailing mean |
 | `label` | 1 if the 12-month forward excess return of equities over bills is positive |
 
 **763 rows, 761 complete.** The two incomplete rows are 2024-10-31 and 2025-08-31, both
@@ -778,12 +857,41 @@ because `cpi` is null at their label endpoint — 2025-10 permanently, 2026-08 u
 publishes. No feature has a single null: the expanding warm-up is exhausted long before
 1962, and no in-sample feature window reaches the 2025-10 gap.
 
-**The label.** `sp500_index` is *already* Shiller's real total return index, so the equity
-leg is not deflated again — double-deflating it would be wrong. The bill leg is a nominal
-yield and is deflated by the window's own inflation, `cpi(M)/cpi(M+12)`, which is what puts
-the two legs in the same units. The equity index's rebasing constant cancels in the ratio.
-Bill compounding follows the pre-registered convention: `dtb3` from M+1 through M+12,
-each quoted annualised rate treated as an effective annual rate.
+### The label deflates one leg, not two
+
+The label is an excess return, so both legs must end up in the same units — real. They do
+not start there, and that asymmetry is the whole point:
+
+- **`sp500_index` is already real.** It is Shiller's *Real Total Return Price*, column 9,
+  CPI-deflated at source. Its 12-month ratio `sp500_index(M+12)/sp500_index(M)` is
+  therefore a real gross return with nothing left to do.
+- **`dtb3` is a nominal yield.** Compounding it gives a nominal gross return, which must
+  be deflated by the window's own inflation, `cpi(M)/cpi(M+12)`, to be comparable.
+
+So exactly one leg is deflated. **Deflating both would double-deflate the equity leg**,
+dividing a series that is already in constant dollars by inflation a second time. That
+error is close to invisible in inspection — the result still looks like a plausible excess
+return — and it would bite hardest in the high-inflation stretch of the late 1970s and
+early 1980s, where 12-month inflation reached 14.8%, which is precisely the period where
+the stocks-versus-bills question was most alive.
+
+The equity index's rebasing constant cancels in the ratio, so the label is stable across
+pulls of the Shiller file. Bill compounding follows the pre-registered convention: `dtb3`
+from M+1 through M+12, each quoted annualised rate treated as an effective annual rate.
+
+**Hand-check at decision 1995-03-31**, label window 1995-04-30 to 1996-03-31:
+
+| Quantity | Value |
+| --- | --- |
+| equity real gross, `sp500_index(1996-03)/sp500_index(1995-03)` | 1.306278 |
+| bill gross, nominal, `dtb3` compounded over the 12 months | 1.052588 |
+| bill gross, real, × `cpi(1995-03)/cpi(1996-03)` | 1.023519 |
+| excess | **+0.282759** |
+| label | **1** — matches the built value |
+
+Had the equity leg also been deflated it would have read 1.269 rather than 1.306 here, and
+the excess would have been understated by roughly 3.6 percentage points in a single year —
+enough to flip the sign in any year where equities beat bills by less than inflation.
 
 **How the four rules are enforced.** Windows are computed on the reference-month series
 that carries the NaN, and the availability shift is applied to the *result* — never the
@@ -798,8 +906,11 @@ look like the newest available one.
 points and all four features, **zero inputs postdate their decision** — 3,052 checks. The
 expanding z-score is recomputed by hand at several dates and matches to 1e-10, and it
 differs from a full-sample z by 0.51 sd on average, disagreeing on sign in 10.4% of
-in-sample months. If the complete-row count ever departs from 761 the script stops and
-says so rather than adjusting anything.
+in-sample months. `unrate_trend_12m` is likewise recomputed by hand: at decision
+2025-08-31 the reference month is 2025-07, the trailing window is 2024-08 to 2025-07, the
+latest rate is 4.2 against a window mean of 4.141667, giving +0.058333 — matching the
+built value. If the complete-row count ever departs from 761 the script stops and says so
+rather than adjusting anything.
 
 **Not reported, by design.** The build prints no label positive rate, no class balance,
 and no feature-label association. The baseline is re-estimated inside each walk-forward
