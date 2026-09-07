@@ -966,6 +966,115 @@ discrepancy be run down, rather than pass quietly.
 
 ---
 
+## Walk-forward training — development sample only
+
+`scripts/train_walkforward.py` reads `data/features.parquet` restricted to the
+pre-registered development window, **1962-02-28 to 2009-12-31, 575 month-ends, 47
+independent 12-month blocks**, and runs the expanding-window walk-forward of
+pre-registration section 4. It writes `data/walkforward_results.csv` and appends an
+entry to `logs/experiment_log.md`.
+
+```bash
+python scripts/train_walkforward.py
+```
+
+**The holdout is not read.** The date restriction is pushed into the parquet reader as a
+filter, so 2010-2025 rows are never materialised into a dataframe; the script then asserts
+that nothing past 2009-12-31 survived. No holdout row is loaded, counted, printed, or used
+to compute any number in this stage.
+
+### Two models, in this order, and nothing else
+
+1. **The constant baseline** of section 3: a single probability equal to **that fold's own
+   training-window positive rate**, recomputed at every step. Never the full-sample rate.
+2. **Logistic regression on the four pre-registered features.** Unpenalised maximum
+   likelihood, so there is no regularisation strength to pick and nothing to tune.
+
+No gradient boosting, no hyperparameter search, no feature selection. The point of running
+the simplest thing first is to find out whether any signal exists before introducing a
+model with the capacity to fit 47 independent observations by accident.
+
+### Folds, and the embargo arithmetic
+
+Test blocks are **calendar years, 1980 through 2009 — 30 folds**. Each test block is
+exactly one non-overlapping 12-month block, and the development window divides evenly into
+them. Training expands from 1962-02-28 to a cut and never slides or resets.
+
+The cut is **12 months before the fold's first test point**, which is the binding
+constraint for every later test point in the fold. For test year *Y* the training window
+therefore ends at *(Y−1)*-01-31, and the last training row's 12-month label window closes
+exactly at *Y*-01-31, where the first test row's label window opens. The two touch at an
+endpoint and do not overlap — which is the whole purpose of the embargo, since labels are
+12-month overlapping and training up to the test point would drag the last year of training
+labels into the test window. The script asserts this fold by fold rather than assuming it.
+
+Two costs follow from the design and are stated rather than hidden:
+
+| Rows | Fate | Why |
+| --- | --- | --- |
+| 1962-02-28 .. 1979-01-31 | train only, never tested | the smallest training window has to come from somewhere |
+| 2008-02-29 .. 2009-12-31 | tested, never trained on | the embargo removes the last 12 months before each cut |
+
+**Not fixed by the pre-registration, chosen here.** Section 4 fixes the expanding window
+and the 12-month embargo; it does not fix the test-block length or where the first test
+fold starts. Calendar-year blocks and a 1980 start — leaving 204 month-ends, 17
+independent blocks, as the smallest training window for a five-parameter model — were
+written into the script before it was run for the first time, and are recorded in
+`logs/experiment_log.md` with everything else. They are implementation choices, not
+amendments to sections 1-6.
+
+### Nothing crosses a fold boundary
+
+Standardisation is fit on the training rows of each fold and applied to that fold's test
+rows. No mean, no standard deviation, no quantile grid, and no positive rate is computed
+over anything wider than the fold's own training window. The feature layer's expanding
+CAPE z-score (Rule 1) is already past-only by construction, so the two guarantees compose
+rather than conflict.
+
+### Results
+
+Per fold: the train and test spans, `n_train` and `n_test`, the fold's own baseline rate,
+and Brier for model and baseline, with accuracy and log loss alongside as reporting-only
+columns. A `POOLED` row pools all 360 test rows, each scored against its own fold's
+baseline.
+
+| Pooled over 1980-01-31 .. 2009-12-31, 360 month-ends, 30 independent blocks | |
+| --- | --- |
+| Brier, logistic regression | **0.231755** |
+| Brier, baseline | **0.212031** |
+| Relative change in Brier | **−9.30%** — the model's Brier is *higher* |
+| Moving-block bootstrap 95% CI, baseline minus model, block 12, 10,000 resamples | [−0.072089, +0.027139] |
+| Folds where the model's Brier is below its baseline's | 17 of 30 |
+| Accuracy, model / baseline — reporting only | 0.688889 / 0.719444 |
+| Log loss, model / baseline — reporting only | 0.742115 / 0.616578 |
+
+Read the fold count carefully: the model wins 17 folds of 30 on Brier and still loses
+pooled, because its losses are concentrated in the folds where it was most confident and
+wrong — 2000, 2001 and 2002 alone carry Brier scores of 0.84, 0.92 and 0.48 against
+baselines of 0.49, 0.50 and 0.28. A count of fold wins is not the primary metric and is
+not being promoted to one.
+
+The bootstrap interval spans zero. The pre-registered success criterion of section 5 — a
+10% *relative reduction* in Brier — is a **holdout** criterion and is not being evaluated
+here; the holdout remains unread. What the development sample shows is stated above and
+nothing is inferred from it beyond the numbers.
+
+Accuracy and log loss are reported because section 5 says they are reported. Both are also
+worse than the baseline here, so no question of promoting them over Brier arises, and if
+they had been better the answer would still be no.
+
+### The configuration log
+
+`logs/experiment_log.md` records **every configuration run**, with the date, what changed
+from the previous entry, and the result. The script appends to it on every run and cannot
+be run without writing an entry. Each entry embeds its own configuration as an HTML
+comment, so "what changed" is computed by diffing against the previous entry rather than
+remembered and written by hand — the same reasoning as the definition hash in the feature
+layer: a record that depends on someone choosing to update it is a record that will
+eventually be wrong.
+
+---
+
 ## Provenance
 
 Every build writes a header block into the parquet file's schema metadata and a
